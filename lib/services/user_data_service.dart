@@ -14,6 +14,10 @@ class UserDataService {
   static const String _localSearchKey = 'local_search';
   static const String _isLocalModeKey = 'is_local_mode';
   static const String _superResModeKey = 'super_res_mode';
+  static const String _danmakuEnabledKey = 'danmaku_enabled';
+  static const String _danmakuOpacityKey = 'danmaku_opacity';
+  static const String _danmakuFontScaleKey = 'danmaku_font_scale';
+  static const String _danmakuAreaKey = 'danmaku_area';
   
   // 内存缓存
   static bool? _isLocalModeCache;
@@ -144,6 +148,47 @@ class UserDataService {
   static Future<void> setSuperResMode(SuperResMode mode) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_superResModeKey, mode.name);
+  }
+
+  // 弹幕设置：开关（默认开）/不透明度/字号倍率/显示区域（占屏高比例）
+  static Future<bool> getDanmakuEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_danmakuEnabledKey) ?? true;
+  }
+
+  static Future<void> setDanmakuEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_danmakuEnabledKey, value);
+  }
+
+  static Future<double> getDanmakuOpacity() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_danmakuOpacityKey) ?? 0.85;
+  }
+
+  static Future<void> setDanmakuOpacity(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_danmakuOpacityKey, value);
+  }
+
+  static Future<double> getDanmakuFontScale() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_danmakuFontScaleKey) ?? 1.0;
+  }
+
+  static Future<void> setDanmakuFontScale(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_danmakuFontScaleKey, value);
+  }
+
+  static Future<double> getDanmakuArea() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_danmakuAreaKey) ?? 0.6;
+  }
+
+  static Future<void> setDanmakuArea(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_danmakuAreaKey, value);
   }
 
   // 获取豆瓣图片源显示名称

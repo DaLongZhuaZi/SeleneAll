@@ -6,8 +6,10 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
+import '../services/danmaku_service.dart';
 import '../services/super_res_service.dart';
 import '../services/user_data_service.dart';
+import 'danmaku_layer.dart';
 import 'dlna_device_dialog.dart';
 
 class MobilePlayerControls extends StatefulWidget {
@@ -102,6 +104,17 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   // 超分开启提示（短暂徽标）
   String? _superResBadgeText;
   Timer? _superResBadgeTimer;
+  // 弹幕
+  bool _danmakuEnabled = true;
+  double _danmakuOpacity = 0.85;
+  double _danmakuFontScale = 1.0;
+  double _danmakuArea = 0.6;
+  List<DanmakuItem> _danmakuItems = const [];
+  String? _danmakuMatchLabel;
+  bool _danmakuLoading = false;
+  int _danmakuGeneration = 0;
+  String? _danmakuToastText;
+  Timer? _danmakuToastTimer;
 
   @override
   void initState() {
@@ -121,6 +134,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
         }
       }
     }).catchError((_) {});
+    _initDanmaku();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _forceStartHideTimer();
@@ -140,6 +154,12 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     }
     if (oldWidget.isLoadingVideo != widget.isLoadingVideo) {
       _updateBufferPolling();
+    }
+    // 换集/换源（videoUrl 变化）后重新匹配弹幕
+    if (oldWidget.videoUrl != widget.videoUrl && _danmakuEnabled) {
+      _danmakuItems = const [];
+      _danmakuMatchLabel = null;
+      _loadDanmakuAuto();
     }
   }
 
@@ -283,6 +303,216 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     });
   }
 
+  // ---------------- 弹幕 ----------------
+
+  Future<void> _initDanmaku() async {
+    if (widget.live) return;
+    final results = await Future.wait([
+      UserDataService.getDanmakuEnabled(),
+      UserDataService.getDanmakuOpacity(),
+      UserDataService.getDanmakuFontScale(),
+      UserDataService.getDanmakuArea(),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _danmakuEnabled = results[0] as bool;
+      _danmakuOpacity = results[1] as double;
+      _danmakuFontScale = results[2] as double;
+      _danmakuArea = results[3] as double;
+    });
+    if (_danmakuEnabled) {
+      _loadDanmakuAuto();
+    }
+  }
+
+  String _danmakuFileName() {
+    final title = widget.videoTitle ?? '';
+    final index = widget.currentEpisodeIndex;
+    if (index != null && (widget.totalEpisodes ?? 0) > 1) {
+      return '$title 第${index + 1}集';
+    }
+    return title;
+  }
+
+  Future<void> _loadDanmakuAuto() async {
+    if (widget.live || (widget.videoTitle ?? '').isEmpty) return;
+    final gen = ++_danmakuGeneration;
+    setState(() => _danmakuLoading = true);
+    final match = await DanmakuService.autoMatch(_danmakuFileName());
+    if (!mounted || gen != _danmakuGeneration) return;
+    if (match == null) {
+      setState(() {
+        _danmakuLoading = false;
+        _danmakuMatchLabel = null;
+      });
+      return;
+    }
+    await _loadDanmakuForEpisode(
+      gen,
+      match.episodeId,
+      '${match.animeTitle} · ${match.episodeTitle}',
+    );
+  }
+
+  Future<void> _loadDanmakuForEpisode(
+    int gen,
+    int episodeId,
+    String label,
+  ) async {
+    final items = await DanmakuService.fetchComments(episodeId);
+    if (!mounted || gen != _danmakuGeneration) return;
+    setState(() {
+      _danmakuItems = items;
+      _danmakuLoading = false;
+      _danmakuMatchLabel = label;
+    });
+    if (items.isNotEmpty) {
+      _showDanmakuToast('弹幕已加载 ${items.length} 条 · $label');
+    } else {
+      _showDanmakuToast('该集暂无弹幕 · $label');
+    }
+  }
+
+  void _showDanmakuToast(String text) {
+    setState(() => _danmakuToastText = text);
+    _danmakuToastTimer?.cancel();
+    _danmakuToastTimer = Timer(const Duration(milliseconds: 2400), () {
+      if (mounted) setState(() => _danmakuToastText = null);
+    });
+  }
+
+  Future<void> _toggleDanmaku() async {
+    final next = !_danmakuEnabled;
+    setState(() => _danmakuEnabled = next);
+    await UserDataService.setDanmakuEnabled(next);
+    if (next && _danmakuItems.isEmpty && !_danmakuLoading) {
+      _loadDanmakuAuto();
+    }
+  }
+
+  Future<void> _showDanmakuSettings() async {
+    _onUserInteraction();
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) {
+        final isDark = Theme.of(sheetContext).brightness == Brightness.dark;
+        final fg = isDark ? Colors.white : Colors.black87;
+        final sub = isDark ? Colors.white60 : Colors.black54;
+        return SafeArea(
+          child: StatefulBuilder(
+            builder: (context, setSheetState) {
+              Widget sliderRow(
+                String label,
+                double value,
+                double min,
+                double max,
+                String display,
+                ValueChanged<double> onChanged,
+              ) {
+                return Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 64,
+                        child: Text(label,
+                            style: TextStyle(color: fg, fontSize: 13.5)),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          value: value.clamp(min, max),
+                          min: min,
+                          max: max,
+                          onChanged: (v) {
+                            setSheetState(() {});
+                            onChanged(v);
+                          },
+                        ),
+                      ),
+                      SizedBox(
+                        width: 40,
+                        child: Text(display,
+                            style: TextStyle(color: sub, fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                    child: Text(
+                      '弹幕设置',
+                      style: TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.bold, color: fg),
+                    ),
+                  ),
+                  if (_danmakuMatchLabel != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                      child: Text(
+                        '当前：$_danmakuMatchLabel（${_danmakuItems.length} 条）',
+                        style: TextStyle(fontSize: 12, color: sub),
+                      ),
+                    ),
+                  sliderRow(
+                      '不透明度', _danmakuOpacity, 0.3, 1.0,
+                      '${(_danmakuOpacity * 100).round()}%', (v) {
+                    setState(() => _danmakuOpacity = v);
+                    UserDataService.setDanmakuOpacity(v);
+                  }),
+                  sliderRow('字号', _danmakuFontScale, 0.7, 1.4,
+                      '${(_danmakuFontScale * 100).round()}%', (v) {
+                    setState(() => _danmakuFontScale = v);
+                    UserDataService.setDanmakuFontScale(v);
+                  }),
+                  sliderRow('显示区域', _danmakuArea, 0.25, 1.0,
+                      '${(_danmakuArea * 100).round()}%', (v) {
+                    setState(() => _danmakuArea = v);
+                    UserDataService.setDanmakuArea(v);
+                  }),
+                  ListTile(
+                    leading: Icon(Icons.search, color: fg),
+                    title: Text('手动选择弹幕（匹配不对时用）',
+                        style: TextStyle(color: fg, fontSize: 14)),
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      _showDanmakuSearch();
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showDanmakuSearch() async {
+    final picked = await showModalBottomSheet<DanmakuEpisode>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _DanmakuPickerSheet(
+        initialKeyword: widget.videoTitle ?? '',
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _danmakuEnabled = true;
+      _danmakuLoading = true;
+    });
+    await UserDataService.setDanmakuEnabled(true);
+    final gen = ++_danmakuGeneration;
+    await _loadDanmakuForEpisode(gen, picked.episodeId, picked.episodeTitle);
+  }
+
   @override
   void dispose() {
     for (final subscription in _subscriptions) {
@@ -296,6 +526,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     _rewindTimer?.cancel();
     _speedPollTimer?.cancel();
     _superResBadgeTimer?.cancel();
+    _danmakuToastTimer?.cancel();
     VolumeController.instance.showSystemUI = true;
     super.dispose();
   }
@@ -820,6 +1051,16 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
 
     Widget content = Stack(
       children: [
+        if (_danmakuEnabled && _danmakuItems.isNotEmpty)
+          Positioned.fill(
+            child: DanmakuLayer(
+              player: widget.player,
+              items: _danmakuItems,
+              opacity: _danmakuOpacity,
+              fontScale: _danmakuFontScale,
+              areaRatio: _danmakuArea,
+            ),
+          ),
         Positioned.fill(child: _buildGestureLayer()),
         _buildTopGradient(),
         _buildBottomGradient(),
@@ -836,6 +1077,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
         if (_isFullscreen) _buildSideSeekButtons(),
         if (_superResMode != SuperResMode.off) _buildSuperResPill(),
         if (_superResBadgeText != null) _buildSuperResBadge(),
+        if (_danmakuToastText != null) _buildDanmakuToast(),
         if (_isFullscreen && _showBrightnessIndicator && !_isLocked)
           _buildBrightnessIndicator(),
         if (_isFullscreen) _buildRightOverlay(),
@@ -1197,6 +1439,44 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
                   GestureDetector(
                     onTap: () async {
                       _onUserInteraction();
+                      await _toggleDanmaku();
+                    },
+                    onLongPress: () async {
+                      await _showDanmakuSettings();
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      padding: EdgeInsets.only(right: _isFullscreen ? 22 : 10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: _danmakuEnabled
+                                ? Colors.red
+                                : Colors.white54,
+                            width: 1.2,
+                          ),
+                          borderRadius: BorderRadius.circular(5),
+                        ),
+                        child: Text(
+                          '弹',
+                          style: TextStyle(
+                            color: _danmakuEnabled
+                                ? Colors.red
+                                : Colors.white54,
+                            fontSize: _isFullscreen ? 12.5 : 11.5,
+                            fontWeight: FontWeight.bold,
+                            height: 1.1,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (!widget.live)
+                  GestureDetector(
+                    onTap: () async {
+                      _onUserInteraction();
                       await _showSpeedDialog();
                     },
                     behavior: HitTestBehavior.opaque,
@@ -1445,6 +1725,31 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     );
   }
 
+  /// 弹幕加载结果提示（底部居中，短暂显示）。
+  Widget _buildDanmakuToast() {
+    return Positioned(
+      bottom: _isFullscreen ? 96 : 76,
+      left: 24,
+      right: 24,
+      child: Center(
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Text(
+            _danmakuToastText!,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white, fontSize: 12.5),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 超分开启状态小药丸：仅随控制栏一起显示，不遮挡观看。
   Widget _buildSuperResPill() {
     return Positioned(
@@ -1679,6 +1984,174 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 弹幕手动选择面板：搜番剧 → 选剧集，返回所选剧集。
+class _DanmakuPickerSheet extends StatefulWidget {
+  final String initialKeyword;
+
+  const _DanmakuPickerSheet({required this.initialKeyword});
+
+  @override
+  State<_DanmakuPickerSheet> createState() => _DanmakuPickerSheetState();
+}
+
+class _DanmakuPickerSheetState extends State<_DanmakuPickerSheet> {
+  late final TextEditingController _controller;
+  List<DanmakuAnime> _animes = [];
+  List<DanmakuEpisode> _episodes = [];
+  DanmakuAnime? _selectedAnime;
+  bool _loading = false;
+  bool _searched = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialKeyword);
+    if (widget.initialKeyword.trim().isNotEmpty) {
+      _search();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search() async {
+    final keyword = _controller.text.trim();
+    if (keyword.isEmpty) return;
+    setState(() {
+      _loading = true;
+      _selectedAnime = null;
+      _episodes = [];
+    });
+    final results = await DanmakuService.search(keyword);
+    if (!mounted) return;
+    setState(() {
+      _animes = results;
+      _loading = false;
+      _searched = true;
+    });
+  }
+
+  Future<void> _pickAnime(DanmakuAnime anime) async {
+    setState(() {
+      _loading = true;
+      _selectedAnime = anime;
+    });
+    final episodes = await DanmakuService.episodes(anime.animeId);
+    if (!mounted) return;
+    setState(() {
+      _episodes = episodes;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final fg = isDark ? Colors.white : Colors.black87;
+    final sub = isDark ? Colors.white60 : Colors.black54;
+    final height = MediaQuery.of(context).size.height * 0.72;
+    return SafeArea(
+      child: SizedBox(
+        height: height,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 8, 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      autofocus: false,
+                      style: TextStyle(color: fg, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: '搜索番剧名',
+                        hintStyle: TextStyle(color: sub, fontSize: 14),
+                        isDense: true,
+                        border: const OutlineInputBorder(),
+                      ),
+                      onSubmitted: (_) => _search(),
+                    ),
+                  ),
+                  TextButton(onPressed: _search, child: const Text('搜索')),
+                ],
+              ),
+            ),
+            if (_selectedAnime != null)
+              ListTile(
+                leading: Icon(Icons.arrow_back, color: fg, size: 20),
+                title: Text(_selectedAnime!.animeTitle,
+                    style: TextStyle(color: fg, fontSize: 14)),
+                subtitle: Text('选择剧集',
+                    style: TextStyle(color: sub, fontSize: 12)),
+                onTap: () => setState(() {
+                  _selectedAnime = null;
+                  _episodes = [];
+                }),
+              ),
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _selectedAnime == null
+                      ? (_searched && _animes.isEmpty
+                          ? Center(
+                              child: Text('没有搜到，换个关键词试试',
+                                  style: TextStyle(color: sub)))
+                          : ListView.builder(
+                              itemCount: _animes.length,
+                              itemBuilder: (context, index) {
+                                final anime = _animes[index];
+                                return ListTile(
+                                  title: Text(anime.animeTitle,
+                                      style:
+                                          TextStyle(color: fg, fontSize: 14)),
+                                  subtitle: Text(
+                                    [
+                                      anime.typeDescription,
+                                      if (anime.episodeCount != null)
+                                        '共 ${anime.episodeCount} 集',
+                                    ].join(' · '),
+                                    style:
+                                        TextStyle(color: sub, fontSize: 12),
+                                  ),
+                                  trailing: Icon(Icons.chevron_right,
+                                      color: sub, size: 18),
+                                  onTap: () => _pickAnime(anime),
+                                );
+                              },
+                            ))
+                      : (_episodes.isEmpty
+                          ? Center(
+                              child: Text('该番剧暂无剧集数据',
+                                  style: TextStyle(color: sub)))
+                          : ListView.builder(
+                              itemCount: _episodes.length,
+                              itemBuilder: (context, index) {
+                                final episode = _episodes[index];
+                                return ListTile(
+                                  title: Text(
+                                    episode.episodeTitle.isNotEmpty
+                                        ? episode.episodeTitle
+                                        : '第 ${episode.episodeNumber} 集',
+                                    style:
+                                        TextStyle(color: fg, fontSize: 14),
+                                  ),
+                                  onTap: () =>
+                                      Navigator.of(context).pop(episode),
+                                );
+                              },
+                            )),
+            ),
+          ],
         ),
       ),
     );
