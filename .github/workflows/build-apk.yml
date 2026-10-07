@@ -22,11 +22,12 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install pinned NDKs
-        run: sdkmanager "ndk;29.0.14033849" "ndk;27.0.12077973"
+        run: |
+          SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)
+          echo "Using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          yes | "$SDKMANAGER" "ndk;29.0.14033849" "ndk;27.0.12077973"
 
       - name: Install dependencies
         run: flutter pub get
