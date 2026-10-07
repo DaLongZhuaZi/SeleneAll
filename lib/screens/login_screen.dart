@@ -577,7 +577,7 @@ class _LoginScreenState extends State<LoginScreen> {
         GestureDetector(
           onTap: _handleLogoTap,
           child: Text(
-            'Selene',
+            'SeleneAll',
             style: FontUtils.sourceCodePro(
               fontSize: 42,
               fontWeight: FontWeight.w400,
@@ -844,7 +844,7 @@ class _LoginScreenState extends State<LoginScreen> {
           GestureDetector(
             onTap: _handleLogoTap,
             child: Text(
-              'Selene',
+              'SeleneAll',
               style: FontUtils.sourceCodePro(
                 fontSize: 42,
                 fontWeight: FontWeight.w400,
