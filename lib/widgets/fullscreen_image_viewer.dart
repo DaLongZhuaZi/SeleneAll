@@ -6,6 +6,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:gal/gal.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:provider/provider.dart';
+import '../services/cover_cache_manager.dart';
 import '../utils/image_url.dart';
 import '../utils/font_utils.dart';
 import '../services/theme_service.dart';
@@ -362,6 +363,7 @@ class _FullscreenImageViewerState extends State<FullscreenImageViewer> {
                       final headers = getImageRequestHeaders(imageUrl, widget.source);
                       
                       return CachedNetworkImage(
+                        cacheManager: CoverCacheManager.instance,
                         imageUrl: imageUrl,
                         httpHeaders: headers,
                         fit: BoxFit.fitWidth,

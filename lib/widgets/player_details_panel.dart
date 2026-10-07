@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/search_result.dart';
 import '../models/douban_movie.dart';
+import '../services/cover_cache_manager.dart';
 import '../utils/image_url.dart';
 
 class PlayerDetailsPanel extends StatelessWidget {
@@ -461,6 +462,7 @@ class PlayerDetailsPanel extends StatelessWidget {
                   final headers = getImageRequestHeaders(imageUrl, source);
 
                   return CachedNetworkImage(
+                    cacheManager: CoverCacheManager.instance,
                     imageUrl: imageUrl,
                     fit: BoxFit.cover,
                     width: 120,

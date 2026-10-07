@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/video_info.dart';
+import '../services/cover_cache_manager.dart';
 import '../services/theme_service.dart';
 import 'video_menu_bottom_sheet.dart';
 import '../utils/image_url.dart';
@@ -96,6 +97,7 @@ class _VideoCardState extends State<VideoCard> {
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
                           child: CachedNetworkImage(
+                            cacheManager: CoverCacheManager.instance,
                             imageUrl: imageUrl,
                             fit: BoxFit.cover,
                             // 使用图片URL作为缓存key

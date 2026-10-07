@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import '../models/video_info.dart';
+import '../services/cover_cache_manager.dart';
 import '../models/douban_movie.dart';
 import '../models/bangumi.dart';
 import '../services/theme_service.dart';
@@ -708,6 +709,7 @@ class _VideoMenuBottomSheetState extends State<VideoMenuBottomSheet>
                                             child: ClipRRect(
                                               borderRadius: BorderRadius.circular(8),
                                               child: CachedNetworkImage(
+                                                cacheManager: CoverCacheManager.instance,
                                                 imageUrl: thumbUrl,
                                                 httpHeaders: headers,
                                                 fit: BoxFit.cover,

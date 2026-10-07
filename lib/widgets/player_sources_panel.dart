@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/search_result.dart';
+import '../services/cover_cache_manager.dart';
 import '../utils/device_utils.dart';
 
 class SourceSpeed {
@@ -280,6 +281,7 @@ class _SourcePanelItemWithHoverState extends State<_SourcePanelItemWithHover> {
                         child: AspectRatio(
                           aspectRatio: 2 / 3,
                           child: CachedNetworkImage(
+                            cacheManager: CoverCacheManager.instance,
                             imageUrl: widget.source.poster,
                             fit: BoxFit.cover,
                             placeholder: (context, url) => Container(

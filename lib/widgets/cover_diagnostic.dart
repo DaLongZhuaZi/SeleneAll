@@ -1,8 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
+import '../services/cover_cache_manager.dart';
 import '../utils/image_url.dart';
 
 /// 封面加载诊断：在 App 内用三种方式实测同一张封面图，把确切结果
@@ -65,9 +65,9 @@ class CoverDiagnostic {
     buffer.writeln('App 请求头: $headers');
     await _testRaw(buffer, '原始请求(带头)', resolved, headers);
 
-    // 3) 缓存管理器（CachedNetworkImage 的实际加载路径）
+    // 3) 缓存管理器（CachedNetworkImage 的实际加载路径，含代理兜底）
     try {
-      final file = await DefaultCacheManager().getSingleFile(
+      final file = await CoverCacheManager.instance.getSingleFile(
         resolved,
         headers: headers,
       );
