@@ -22,6 +22,11 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Accept SDK licenses and install NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "ndk;29.0.14033849" "ndk;27.0.12077973"
+
       - name: Install dependencies
         run: flutter pub get
 
