@@ -683,12 +683,13 @@ class _PlayerScreenState extends State<PlayerScreen>
       } else {
         // 本地播放：根据设备类型调用对应播放器的 updateDataSource
         var playUrl = finalUrl;
-        Map<String, String>? playHeaders;
         // 里世界（特殊模式）与网页版对齐走服务端中转：网页版经
-        // cms-proxy 拿到的是 proxy-m3u8 包装地址（服务端抓列表、
-        // 去广告、分片中转），App 直连源站则常被重置/限速（封面
-        // 已实证同类问题）。proxySegments=true 让分片也经服务器中转。
-        // 用户已自设 m3u8 代理时不叠加。
+        // cms-proxy 拿到的是 proxy-m3u8 包装地址——播放列表由服务器
+        // 抓取、去广告、子列表递归代理，分片保持直连（网页版实测
+        // 流畅的正是这条路径）。注意不能加 proxySegments：分片全中转
+        // 走的是另一个接口，要求该源在服务端单独开启「代理模式」，
+        // 未开启会直接 403 卡死（已实测踩坑）。用户自设 m3u8 代理时
+        // 不叠加。
         if (m3u8ProxyUrl.isEmpty &&
             (newUrl.startsWith('http://') ||
                 newUrl.startsWith('https://')) &&
@@ -698,21 +699,14 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (serverUrl != null && serverUrl.isNotEmpty) {
             final base = serverUrl.replaceAll(RegExp(r'/+$'), '');
             playUrl =
-                '$base/api/proxy-m3u8?url=${Uri.encodeComponent(newUrl)}&proxySegments=true';
-            print('里世界播放走服务端中转: $playUrl');
-            // 关键：分片接口 /api/proxy/vod/segment 不在登录豁免名单，
-            // 必须带登录 Cookie（实测无 Cookie 返回 401、播放卡死）；
-            // 网页版靠浏览器自动带 Cookie，App 需显式给 mpv。
-            final cookies = await UserDataService.getCookies();
-            if (cookies != null && cookies.isNotEmpty) {
-              playHeaders = {'Cookie': cookies};
-            }
+                '$base/api/proxy-m3u8?url=${Uri.encodeComponent(newUrl)}&source=${Uri.encodeComponent(currentSource)}';
+            print('里世界播放走服务端列表中转: $playUrl');
           }
         }
         await _videoPlayerController?.updateDataSource(
           playUrl,
           startAt: startAt,
-          headers: playHeaders ?? const <String, String>{},
+          headers: const <String, String>{},
         );
       }
     } catch (e) {
