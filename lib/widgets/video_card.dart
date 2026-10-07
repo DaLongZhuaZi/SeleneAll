@@ -102,10 +102,11 @@ class _VideoCardState extends State<VideoCard> {
                             cacheKey: imageUrl,
                             httpHeaders: headers,
                             // 添加缓存配置
+                            // 只给 memCacheWidth：同时给宽高时 Flutter 解码会把
+                            // 图片拉伸到目标框（实证：600x338 会被拉成 240x360），
+                            // 豆瓣 2:3 海报无感，但特殊源多为 16:9 横图会严重变形；
+                            // 只限宽可保持原始比例，显示交给 BoxFit.cover 裁切。
                             memCacheWidth: (width *
-                                    MediaQuery.of(context).devicePixelRatio)
-                                .round(),
-                            memCacheHeight: (height *
                                     MediaQuery.of(context).devicePixelRatio)
                                 .round(),
                             // 占位符

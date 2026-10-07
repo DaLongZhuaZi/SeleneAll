@@ -712,8 +712,8 @@ class _VideoMenuBottomSheetState extends State<VideoMenuBottomSheet>
                                                 httpHeaders: headers,
                                                 fit: BoxFit.cover,
                                                 // 优化图片加载，避免动画卡顿
+                                                // 只限宽不限高，避免解码拉伸（见 VideoCard 同处说明）
                                                 memCacheWidth: 120, // 限制内存缓存大小
-                                                memCacheHeight: 160,
                                                 fadeInDuration: const Duration(milliseconds: 150), // 更快的淡入动画
                                                 fadeOutDuration: const Duration(milliseconds: 100),
                                                 placeholder: (context, url) => Container(

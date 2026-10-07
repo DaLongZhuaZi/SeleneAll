@@ -467,8 +467,8 @@ class PlayerDetailsPanel extends StatelessWidget {
                     height: 160,
                     cacheKey: imageUrl,
                     httpHeaders: headers,
+                    // 只限宽不限高，避免解码拉伸（见 VideoCard 同处说明）
                     memCacheWidth: (120 * MediaQuery.of(context).devicePixelRatio).round(),
-                    memCacheHeight: (160 * MediaQuery.of(context).devicePixelRatio).round(),
                     placeholder: (context, url) => Container(
                       width: 120,
                       height: 160,
