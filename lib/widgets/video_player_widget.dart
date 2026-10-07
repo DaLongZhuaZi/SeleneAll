@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:pip/pip.dart';
+import '../services/super_res_service.dart';
+import '../services/user_data_service.dart';
 import 'mobile_player_controls.dart';
 import 'pc_player_controls.dart';
 import 'video_player_surface.dart';
@@ -171,6 +173,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     _player = Player();
     _videoController = VideoController(_player!);
     _setupPlayerListeners();
+    // 应用已保存的超分（Anime4K）模式
+    final superResMode = await UserDataService.getSuperResMode();
+    if (superResMode != SuperResMode.off && _player != null) {
+      await SuperResService.apply(_player!, superResMode);
+    }
     if (_currentUrl != null) {
       await _openCurrentMedia();
     }
@@ -348,6 +355,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     await _player?.setRate(speed);
   }
 
+  Future<void> _setSuperResMode(SuperResMode mode) async {
+    await UserDataService.setSuperResMode(mode);
+    if (_player != null) {
+      await SuperResService.apply(_player!, mode);
+    }
+  }
+
   void _exitWebFullscreen() {
     _exitWebFullscreenCallback?.call();
   }
@@ -522,6 +536,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
                         live: widget.live,
                         playbackSpeedListenable: _playbackSpeed,
                         onSetSpeed: _setPlaybackSpeed,
+                        onSetSuperResMode: _setSuperResMode,
                         onEnterPipMode: _enterPipMode,
                         isPipMode: _isPipMode,
                       );

@@ -1,5 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'super_res_service.dart';
+
 class UserDataService {
   static const String _serverUrlKey = 'server_url';
   static const String _usernameKey = 'username';
@@ -11,6 +13,7 @@ class UserDataService {
   static const String _preferSpeedTestKey = 'prefer_speed_test';
   static const String _localSearchKey = 'local_search';
   static const String _isLocalModeKey = 'is_local_mode';
+  static const String _superResModeKey = 'super_res_mode';
   
   // 内存缓存
   static bool? _isLocalModeCache;
@@ -130,6 +133,17 @@ class UserDataService {
   static Future<String> getDoubanImageSourceKey() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_doubanImageSourceKey) ?? 'direct';
+  }
+
+  // 播放器超分（Anime4K）模式，默认关闭
+  static Future<SuperResMode> getSuperResMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return SuperResMode.fromName(prefs.getString(_superResModeKey));
+  }
+
+  static Future<void> setSuperResMode(SuperResMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_superResModeKey, mode.name);
   }
 
   // 获取豆瓣图片源显示名称

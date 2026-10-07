@@ -6,6 +6,8 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
+import '../services/super_res_service.dart';
+import '../services/user_data_service.dart';
 import 'dlna_device_dialog.dart';
 
 class MobilePlayerControls extends StatefulWidget {
@@ -28,6 +30,7 @@ class MobilePlayerControls extends StatefulWidget {
   final bool live;
   final ValueNotifier<double> playbackSpeedListenable;
   final Future<void> Function(double speed) onSetSpeed;
+  final Future<void> Function(SuperResMode mode) onSetSuperResMode;
   final Future<void> Function() onEnterPipMode;
   final bool isPipMode;
 
@@ -52,6 +55,7 @@ class MobilePlayerControls extends StatefulWidget {
     this.live = false,
     required this.playbackSpeedListenable,
     required this.onSetSpeed,
+    required this.onSetSuperResMode,
     required this.onEnterPipMode,
     required this.isPipMode,
   });
@@ -80,6 +84,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   Timer? _brightnessHideTimer;
   Timer? _timeUpdateTimer;
   String _currentTime = '';
+  SuperResMode _superResMode = SuperResMode.off;
 
   @override
   void initState() {
@@ -88,6 +93,11 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     _listenPlayerStreams();
     _updateCurrentTime();
     _startTimeUpdateTimer();
+    UserDataService.getSuperResMode().then((mode) {
+      if (mounted) {
+        setState(() => _superResMode = mode);
+      }
+    }).catchError((_) {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _forceStartHideTimer();
@@ -458,6 +468,72 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     if (!mounted) return;
     if (result != null) {
       await widget.onSetSpeed(result);
+    }
+  }
+
+  Future<void> _showSuperResDialog() async {
+    final screenHeight = MediaQuery.of(context).size.height;
+    final result = await showModalBottomSheet<SuperResMode>(
+      context: context,
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: screenHeight * 0.75,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '超分（Anime4K）',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ),
+                  ...SuperResMode.values.map((mode) {
+                    final selected = mode == _superResMode;
+                    return ListTile(
+                      title: Text(
+                        mode.label,
+                        style: TextStyle(
+                          color: selected
+                              ? Colors.red
+                              : (isDark ? Colors.white : Colors.black87),
+                          fontWeight:
+                              selected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      subtitle: Text(
+                        mode.description,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isDark ? Colors.white60 : Colors.black54,
+                        ),
+                      ),
+                      onTap: () => Navigator.of(context).pop(mode),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted) return;
+    if (result != null) {
+      setState(() => _superResMode = result);
+      await widget.onSetSuperResMode(result);
     }
   }
 
@@ -887,6 +963,27 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
                         Icons.speed,
                         color: Colors.white,
                         size: _isFullscreen ? 22 : 20,
+                      ),
+                    ),
+                  ),
+                if (!widget.live)
+                  GestureDetector(
+                    onTap: () async {
+                      _onUserInteraction();
+                      await _showSuperResDialog();
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      padding: EdgeInsets.only(right: _isFullscreen ? 22 : 10),
+                      child: Text(
+                        '超分',
+                        style: TextStyle(
+                          color: _superResMode != SuperResMode.off
+                              ? Colors.red
+                              : Colors.white,
+                          fontSize: _isFullscreen ? 14 : 13,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
