@@ -47,6 +47,17 @@ class ApiResponse<T> {
 class ApiService {
   static const Duration _timeout = Duration(seconds: 30);
 
+  /// 判断接口是否支持 MoonTVPlus `special=1` 参数。
+  /// 注意：/api/search 的子路径（如 /api/search/resources）会忽略未知参数，
+  /// 附加 special 无副作用；但要避开 /api/searchhistory 这类同前缀接口。
+  static bool _supportsSpecialParam(String endpoint) {
+    return endpoint == '/api/search' ||
+        endpoint.startsWith('/api/search/') ||
+        endpoint == '/api/detail' ||
+        endpoint == '/api/source-detail' ||
+        endpoint.startsWith('/api/source-search/');
+  }
+
   /// 获取基础URL
   static Future<String?> _getBaseUrl() async {
     return await UserDataService.getServerUrl();
@@ -187,10 +198,22 @@ class ApiService {
     try {
       String url = await _buildUrl(endpoint);
 
+      // MoonTVPlus 里世界：特殊源模式下，为支持 special 参数的接口
+      // 自动附加 special=1（服务端双向隔离：带参只返回特殊源）。
+      Map<String, String>? effectiveQueryParameters = queryParameters;
+      if (_supportsSpecialParam(endpoint) &&
+          await UserDataService.getSpecialMode()) {
+        effectiveQueryParameters = {
+          ...?queryParameters,
+          'special': '1',
+        };
+      }
+
       // 添加查询参数
-      if (queryParameters != null && queryParameters.isNotEmpty) {
+      if (effectiveQueryParameters != null &&
+          effectiveQueryParameters.isNotEmpty) {
         final uri = Uri.parse(url);
-        final newUri = uri.replace(queryParameters: queryParameters);
+        final newUri = uri.replace(queryParameters: effectiveQueryParameters);
         url = newUri.toString();
       }
 
@@ -669,10 +692,25 @@ class ApiService {
   /// 获取搜索资源列表
   static Future<List<SearchResource>> getSearchResources() async {
     try {
+      // 里世界模式：/api/search/resources 不支持 special 参数（恒返回普通源），
+      // 改走 /api/source-search/sources?special=1 获取特殊源列表
+      //（响应字段与 SearchResource 模型一致）。
+      final specialMode = await UserDataService.getSpecialMode();
       final response = await get<List<SearchResource>>(
-        '/api/search/resources',
+        specialMode ? '/api/source-search/sources' : '/api/search/resources',
+        queryParameters: specialMode ? {'special': '1'} : null,
         fromJson: (data) {
-          final list = data as List<dynamic>;
+          // /api/search/resources 返回裸数组；
+          // /api/source-search/sources 返回 {"sources": [...]}
+          final List<dynamic> list;
+          if (data is List<dynamic>) {
+            list = data;
+          } else if (data is Map<String, dynamic> &&
+              data['sources'] is List<dynamic>) {
+            list = data['sources'] as List<dynamic>;
+          } else {
+            list = const [];
+          }
           return list
               .map((item) =>
                   SearchResource.fromJson(item as Map<String, dynamic>))

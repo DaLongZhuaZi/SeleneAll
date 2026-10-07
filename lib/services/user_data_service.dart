@@ -10,6 +10,7 @@ class UserDataService {
   static const String _m3u8ProxyUrlKey = 'm3u8_proxy_url';
   static const String _preferSpeedTestKey = 'prefer_speed_test';
   static const String _localSearchKey = 'local_search';
+  static const String _specialModeKey = 'special_mode';
   static const String _isLocalModeKey = 'is_local_mode';
   
   // 内存缓存
@@ -236,6 +237,18 @@ class UserDataService {
   static Future<bool> getLocalSearch() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_localSearchKey) ?? false;
+  }
+
+  // 保存里世界（MoonTVPlus 特殊源）模式设置
+  static Future<void> saveSpecialMode(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_specialModeKey, enabled);
+  }
+
+  // 获取里世界（MoonTVPlus 特殊源）模式设置（默认为 false）
+  static Future<bool> getSpecialMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_specialModeKey) ?? false;
   }
 
   // 保存本地模式设置

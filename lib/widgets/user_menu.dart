@@ -13,6 +13,8 @@ import '../services/version_service.dart';
 import '../utils/device_utils.dart';
 import '../utils/font_utils.dart';
 import 'update_dialog.dart';
+import 'favorites_grid.dart';
+import 'history_grid.dart';
 
 class UserMenu extends StatefulWidget {
   final bool isDarkMode;
@@ -37,6 +39,7 @@ class _UserMenuState extends State<UserMenu> {
   String _version = '';
   bool _preferSpeedTest = true;
   bool _localSearch = false;
+  bool _specialMode = false;
   bool _isLocalMode = false;
 
   @override
@@ -66,6 +69,7 @@ class _UserMenuState extends State<UserMenu> {
     final m3u8ProxyUrl = await UserDataService.getM3u8ProxyUrl();
     final preferSpeedTest = await UserDataService.getPreferSpeedTest();
     final localSearch = await UserDataService.getLocalSearch();
+    final specialMode = await UserDataService.getSpecialMode();
 
     if (mounted) {
       setState(() {
@@ -77,6 +81,7 @@ class _UserMenuState extends State<UserMenu> {
         _m3u8ProxyUrl = m3u8ProxyUrl;
         _preferSpeedTest = preferSpeedTest;
         _localSearch = localSearch;
+        _specialMode = specialMode;
       });
     }
   }
@@ -835,6 +840,40 @@ class _UserMenuState extends State<UserMenu> {
                           });
                         },
                         icon: LucideIcons.search,
+                      ),
+                    ],
+                    // 里世界（MoonTVPlus 特殊源）选项（本地模式下不显示）
+                    if (!_isLocalMode) ...[
+                      // 分割线
+                      Container(
+                        height: 1,
+                        color: widget.isDarkMode
+                            ? const Color(0xFF374151)
+                            : const Color(0xFFe5e7eb),
+                      ),
+                      _buildToggleOption(
+                        title: '里世界（特殊源）',
+                        value: _specialMode,
+                        onChanged: (value) async {
+                          await UserDataService.saveSpecialMode(value);
+                          if (!mounted) return;
+                          setState(() {
+                            _specialMode = value;
+                          });
+                          // 刷新收藏与历史列表，使其按新模式重新过滤
+                          await FavoritesGrid.refreshFavorites();
+                          await HistoryGrid.refreshHistory();
+                          if (!mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(value
+                                  ? '已进入里世界：搜索、收藏与记录仅显示特殊源'
+                                  : '已退出里世界：搜索、收藏与记录仅显示普通源'),
+                              duration: const Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                        icon: LucideIcons.moon,
                       ),
                     ],
                     // 分割线

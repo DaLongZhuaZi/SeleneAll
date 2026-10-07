@@ -210,11 +210,14 @@ class SSESearchService {
       }
 
       // 构建 SSE URL
+      // MoonTVPlus 里世界：特殊源模式下附加 special=1，只搜特殊源
+      final specialMode = await UserDataService.getSpecialMode();
       final baseUri = Uri.parse(baseUrl);
       final sseUri = baseUri.replace(
         path: '/api/search/ws',
         queryParameters: {
           'q': _currentQuery!,
+          if (specialMode) 'special': '1',
         },
       );
 

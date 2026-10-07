@@ -7,6 +7,7 @@ import 'douban_service.dart';
 import 'data_operation_interface.dart';
 import 'user_data_service.dart';
 import 'local_mode_storage_service.dart';
+import 'special_source_service.dart';
 
 /// 页面缓存服务 - 单例模式
 class PageCacheService
@@ -41,6 +42,22 @@ class PageCacheService
     _cache.clear();
   }
 
+  // ==================== MoonTVPlus 特殊源（里世界）过滤 ====================
+  // 缓存始终保存未按模式过滤的全量数据，模式过滤只发生在返回时，
+  // 因此切换模式无需清缓存（与 origin=live 的读时过滤同理）。
+
+  Future<List<PlayRecord>> _filterPlayRecordsByMode(
+      List<PlayRecord> records) async {
+    return SpecialSourceService.filterByMode<PlayRecord>(
+        records, (record) => record.source);
+  }
+
+  Future<List<FavoriteItem>> _filterFavoritesByMode(
+      List<FavoriteItem> items) async {
+    return SpecialSourceService.filterByMode<FavoriteItem>(
+        items, (item) => item.source);
+  }
+
   // ==================== PlayRecordOperationInterface 实现 ====================
 
   @override
@@ -57,8 +74,9 @@ class PageCacheService
     // 先检查缓存
     final cachedData = getCache<List<PlayRecord>>(cacheKey);
     if (cachedData != null) {
-      // 有缓存数据，直接返回
-      return DataOperationResult.success(cachedData);
+      // 有缓存数据，按当前模式（普通/里世界）过滤后返回
+      return DataOperationResult.success(
+          await _filterPlayRecordsByMode(cachedData));
     }
 
     // 缓存未命中，直接走接口并保存到缓存
@@ -96,9 +114,10 @@ class PageCacheService
         // 按save_time降序排列
         records.sort((a, b) => b.saveTime.compareTo(a.saveTime));
 
-        // 缓存数据
+        // 缓存全量数据，返回时按当前模式过滤
         setCache(cacheKey, records);
-        return DataOperationResult.success(records);
+        return DataOperationResult.success(
+            await _filterPlayRecordsByMode(records));
       }
     } catch (e) {
       return DataOperationResult.error('获取播放记录失败: ${e.toString()}');
@@ -270,10 +289,11 @@ class PageCacheService
     final cachedData = getCache<List<FavoriteItem>>(cacheKey);
     if (cachedData != null) {
       // 有缓存数据，直接返回
-      // 过滤掉 origin=live 的数据
+      // 过滤掉 origin=live 的数据，再按当前模式（普通/里世界）过滤
       final filteredData =
           cachedData.where((item) => item.origin != 'live').toList();
-      return DataOperationResult.success(filteredData);
+      return DataOperationResult.success(
+          await _filterFavoritesByMode(filteredData));
     }
 
     // 缓存未命中，直接走接口并保存到缓存
@@ -297,9 +317,10 @@ class PageCacheService
         // 过滤掉 origin=live 的数据
         final filteredData =
             response.data!.where((item) => item.origin != 'live').toList();
-        // 缓存过滤后的数据
+        // 缓存过滤后的数据（不含模式过滤，保证缓存与模式无关）
         setCache(cacheKey, filteredData);
-        return DataOperationResult.success(filteredData);
+        return DataOperationResult.success(
+            await _filterFavoritesByMode(filteredData));
       }
     } catch (e) {
       return DataOperationResult.error('获取收藏夹失败: ${e.toString()}');
