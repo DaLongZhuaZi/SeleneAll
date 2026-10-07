@@ -35,10 +35,11 @@ Future<String> getImageUrl(String originalUrl, String? source) async {
 
 /// 返回加载网络图片所需的 HTTP 头（主要用于绕过特定站点的反盗链）。
 /// - 豆瓣来源：带豆瓣 Referer 与浏览器 UA；
-/// - 其他远程来源（里世界特殊源的封面大多来自各源站自有图床/CDN）：这类站点
-///   常按 UA / Referer 防盗链，Dart 默认 UA 会被直接拒绝，而网页版用浏览器
-///   条件加载正常——因此统一带浏览器 UA，并以图片自身域名为 Referer 对齐
-///   网页版的加载条件。
+/// - 其他远程来源（里世界特殊源的封面大多来自各源站自有图床/CDN）：网页版
+///   VideoCard 用 referrerPolicy='no-referrer' 加载，即浏览器 UA + 完全不发
+///   Referer。这类图床的防盗链白名单只放行空 Referer（外加拒绝非浏览器 UA）：
+///   Dart 默认 UA 会被拒，带任何外域 Referer（含图片自身域名）同样被拒——
+///   因此这里只给浏览器 UA，绝不附加 Referer。
 Map<String, String>? getImageRequestHeaders(String imageUrl, String? source) {
   final bool isDoubanSource = (source == 'douban') ||
       RegExp(r'https?://([^/]+\.)?douban(io|)\.com', caseSensitive: false)
@@ -61,8 +62,9 @@ Map<String, String>? getImageRequestHeaders(String imageUrl, String? source) {
   if (uri != null &&
       (uri.scheme == 'http' || uri.scheme == 'https') &&
       uri.host.isNotEmpty) {
+    // 注意：绝不能带 Referer——见上方说明，带任何外域 Referer 都会被
+    // 特殊源图床的防盗链拒绝（网页版同理用 no-referrer）。
     return <String, String>{
-      'Referer': '${uri.scheme}://${uri.host}/',
       'User-Agent': browserUa,
       'Accept': accept,
     };
