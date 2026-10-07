@@ -6,6 +6,7 @@ import '../models/search_result.dart';
 import '../models/video_info.dart';
 import '../services/source_browse_service.dart';
 import '../services/theme_service.dart';
+import '../widgets/cover_diagnostic.dart';
 import '../widgets/search_results_grid.dart';
 import '../widgets/video_menu_bottom_sheet.dart';
 
@@ -154,6 +155,13 @@ class _SourceBrowseScreenState extends State<SourceBrowseScreen> {
       appBar: AppBar(
         title: Text(widget.sourceName),
         actions: [
+          if (_results.isNotEmpty)
+            IconButton(
+              icon: const Icon(LucideIcons.bug, size: 20),
+              tooltip: '封面诊断',
+              onPressed: () =>
+                  CoverDiagnostic.show(context, _results.first.poster),
+            ),
           if (widget.onSearchSource != null)
             IconButton(
               icon: const Icon(LucideIcons.search, size: 20),
