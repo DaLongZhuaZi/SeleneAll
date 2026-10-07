@@ -101,6 +101,8 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   double? _cacheDurationSecs;
   int? _cacheSpeedBps;
   Timer? _speedPollTimer;
+  DateTime? _bufferPollSince;
+  bool _bufferHintShown = false;
   // 超分开启提示（短暂徽标）
   String? _superResBadgeText;
   Timer? _superResBadgeTimer;
@@ -240,6 +242,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   /// player.state.buffer，网速恒定时界面就冻住了（用户实测卡 0%）。
   void _updateBufferPolling() {
     if (_isBuffering || widget.isLoadingVideo) {
+      _bufferPollSince ??= DateTime.now();
       if (_speedPollTimer == null) {
         _pollBufferStats();
         _speedPollTimer = Timer.periodic(
@@ -250,6 +253,8 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     } else {
       _speedPollTimer?.cancel();
       _speedPollTimer = null;
+      _bufferPollSince = null;
+      _bufferHintShown = false;
       _cacheBufferingPct = null;
       _cacheDurationSecs = null;
       _cacheSpeedBps = null;
@@ -277,6 +282,16 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
           _cacheDurationSecs = dur;
           _cacheSpeedBps = spd;
         });
+      } else if (pct == null &&
+          dur == null &&
+          spd == null &&
+          !_bufferHintShown &&
+          _bufferPollSince != null &&
+          DateTime.now().difference(_bufferPollSince!) >
+              const Duration(milliseconds: 2500)) {
+        // 数据一直为空时也要触发一次刷新，让「正在连接服务器…」显示出来
+        _bufferHintShown = true;
+        setState(() {});
       }
     } catch (_) {}
   }
@@ -292,6 +307,14 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     }
     if (_cacheSpeedBps != null && _cacheSpeedBps! > 0) {
       parts.add(_formatSpeed(_cacheSpeedBps!));
+    }
+    if (parts.isEmpty &&
+        _bufferPollSince != null &&
+        DateTime.now().difference(_bufferPollSince!) >
+            const Duration(milliseconds: 2500)) {
+      // 长时间拿不到任何缓存数据（连接未建立）也要有明确提示，
+      // 不能只剩一个转圈（用户实测反馈）。
+      return '正在连接服务器…';
     }
     return parts.join(' · ');
   }
