@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, HttpClient;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../widgets/video_player_surface.dart';
@@ -132,6 +132,44 @@ class _PlayerScreenState extends State<PlayerScreen>
   final GlobalKey _playerKey = GlobalKey();
   int _loadGeneration = 0;
   bool _specialModeUi = false;
+
+  // 中转探活缓存：源 key → (是否可用, 探活时间)
+  static final Map<String, (bool, DateTime)> _proxyProbeCache = {};
+
+  /// 播放前探活：用本次构造的中转地址真实请求一次（只看状态码）。
+  /// 服务器拉不到某些源站时中转必然 500 卡死，探活失败才能及时
+  /// 回退直连。结果按源缓存 3 分钟，避免每次切集都多等一轮。
+  Future<bool> _probeProxiedPlaylist(String proxyUrl) async {
+    final key = currentSource;
+    final cached = _proxyProbeCache[key];
+    if (cached != null &&
+        DateTime.now().difference(cached.$2) < const Duration(minutes: 3)) {
+      return cached.$1;
+    }
+    var ok = false;
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final request = await client.getUrl(Uri.parse(proxyUrl));
+      final cookies = await UserDataService.getCookies();
+      if (cookies != null && cookies.isNotEmpty) {
+        request.headers.set('Cookie', cookies);
+      }
+      final response =
+          await request.close().timeout(const Duration(seconds: 8));
+      ok = response.statusCode == 200;
+      await response
+          .drain<void>()
+          .timeout(const Duration(seconds: 2))
+          .catchError((_) {});
+    } catch (_) {
+      ok = false;
+    } finally {
+      client.close(force: true);
+    }
+    _proxyProbeCache[key] = (ok, DateTime.now());
+    return ok;
+  }
 
   bool _isActiveLoad(int generation) =>
       mounted && generation == _loadGeneration;
@@ -692,13 +730,15 @@ class _PlayerScreenState extends State<PlayerScreen>
         // 本地播放：根据设备类型调用对应播放器的 updateDataSource
         var playUrl = finalUrl;
         Map<String, String>? playHeaders;
-        // 里世界（特殊模式）走服务端全中转：列表经 proxy-m3u8 由
-        // 服务器抓取/去广告，分片经 /api/proxy/vod/segment 中转。
-        // 分片全中转的前提（缺一不可，均已齐备）：① 地址带
-        // source=<源key> 且 proxySegments=true；② 该源已在服务端
-        // 后台开启「代理模式」（用户 2026-10-07 已对里世界源开启）；
-        // ③ 分片接口不在登录豁免名单，mpv 必须带登录 Cookie
-        // （网页版靠浏览器自动带）。用户自设 m3u8 代理时不叠加。
+        // 里世界（特殊模式）优先走服务端全中转：列表经 proxy-m3u8
+        // 由服务器抓取/去广告，分片经 /api/proxy/vod/segment 中转。
+        // 全中转前提：地址带 source=<源key> 与 proxySegments=true、
+        // 该源已在服务端开启「代理模式」、mpv 带登录 Cookie（分片
+        // 接口不在登录豁免名单）。用户自设 m3u8 代理时不叠加。
+        // 探活回退（2026-10-07 麻豆实测定案）：该源 CDN 服务器侧
+        // fetch 直接失败（500 fetch failed，疑似 NAS 所在宽带对该
+        // IP 段连接受阻），中转必然卡死——播放前先探活（按源缓存
+        // 3 分钟），中转不可用才临时直连并弹提示明示，不静默降级。
         if (m3u8ProxyUrl.isEmpty &&
             (newUrl.startsWith('http://') ||
                 newUrl.startsWith('https://')) &&
@@ -707,12 +747,25 @@ class _PlayerScreenState extends State<PlayerScreen>
           final serverUrl = await UserDataService.getServerUrl();
           if (serverUrl != null && serverUrl.isNotEmpty) {
             final base = serverUrl.replaceAll(RegExp(r'/+$'), '');
-            playUrl =
+            final candidate =
                 '$base/api/proxy-m3u8?url=${Uri.encodeComponent(newUrl)}&source=${Uri.encodeComponent(currentSource)}&proxySegments=true';
-            print('里世界播放走服务端全中转: $playUrl');
-            final cookies = await UserDataService.getCookies();
-            if (cookies != null && cookies.isNotEmpty) {
-              playHeaders = {'Cookie': cookies};
+            if (await _probeProxiedPlaylist(candidate)) {
+              playUrl = candidate;
+              print('里世界播放走服务端全中转: $playUrl');
+              final cookies = await UserDataService.getCookies();
+              if (cookies != null && cookies.isNotEmpty) {
+                playHeaders = {'Cookie': cookies};
+              }
+            } else {
+              print('里世界中转探活失败，本次临时直连: $newUrl');
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('服务器拉取该视频源失败，本次已临时直连播放'),
+                    duration: Duration(seconds: 3),
+                  ),
+                );
+              }
             }
           }
         }
