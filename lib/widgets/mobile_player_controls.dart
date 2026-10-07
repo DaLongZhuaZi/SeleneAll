@@ -85,6 +85,21 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   Timer? _timeUpdateTimer;
   String _currentTime = '';
   SuperResMode _superResMode = SuperResMode.off;
+  // 两侧点按快退/快进的反馈
+  String? _seekFeedbackText;
+  bool _seekFeedbackIsLeft = true;
+  Timer? _seekFeedbackTimer;
+  // 长按左侧 2 倍快退
+  bool _isRewinding = false;
+  bool _wasPlayingBeforeRewind = false;
+  Timer? _rewindTimer;
+  // 缓冲状态与缓存网速
+  bool _isBuffering = false;
+  int? _cacheSpeedBps;
+  Timer? _speedPollTimer;
+  // 超分开启提示（短暂徽标）
+  String? _superResBadgeText;
+  Timer? _superResBadgeTimer;
 
   @override
   void initState() {
@@ -96,6 +111,12 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     UserDataService.getSuperResMode().then((mode) {
       if (mounted) {
         setState(() => _superResMode = mode);
+        // 已开着超分进入播放：短暂显示徽标，让用户确认确实生效中
+        if (mode != SuperResMode.off) {
+          Future.delayed(const Duration(milliseconds: 900), () {
+            if (mounted) _showSuperResBadge();
+          });
+        }
       }
     }).catchError((_) {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -156,6 +177,64 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
       if (!mounted) return;
       setState(() {});
     }));
+
+    _subscriptions.add(widget.player.stream.buffering.listen((buffering) {
+      if (!mounted) return;
+      setState(() => _isBuffering = buffering);
+      _updateSpeedPolling();
+    }));
+  }
+
+  /// 缓冲期间轮询 mpv 的 cache-speed（字节/秒），供缓冲提示显示网速。
+  void _updateSpeedPolling() {
+    if (_isBuffering) {
+      _speedPollTimer ??=
+          Timer.periodic(const Duration(milliseconds: 500), (_) async {
+        final platform = widget.player.platform;
+        if (platform is! NativePlayer) return;
+        try {
+          final raw = await platform.getProperty('cache-speed');
+          final speed = int.tryParse(raw.trim());
+          if (mounted && speed != null && speed != _cacheSpeedBps) {
+            setState(() => _cacheSpeedBps = speed);
+          }
+        } catch (_) {}
+      });
+    } else {
+      _speedPollTimer?.cancel();
+      _speedPollTimer = null;
+      _cacheSpeedBps = null;
+    }
+  }
+
+  String _formatSpeed(int bytesPerSecond) {
+    if (bytesPerSecond >= 1024 * 1024) {
+      return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+    }
+    if (bytesPerSecond >= 1024) {
+      return '${(bytesPerSecond / 1024).toStringAsFixed(0)} KB/s';
+    }
+    return '$bytesPerSecond B/s';
+  }
+
+  /// 显示超分状态徽标（开启确认/失败提示），约 1.8 秒后自动消失。
+  void _showSuperResBadge() {
+    final status = SuperResService.lastStatus;
+    String text;
+    if (status != null && status.mode == _superResMode && status.error != null) {
+      text = '超分开启失败：着色器加载异常';
+    } else if (status != null &&
+        status.mode == _superResMode &&
+        status.shaderCount > 0) {
+      text = '超分已开启 · ${_superResMode.label}（${status.shaderCount} 个着色器）';
+    } else {
+      text = '超分已开启 · ${_superResMode.label}';
+    }
+    setState(() => _superResBadgeText = text);
+    _superResBadgeTimer?.cancel();
+    _superResBadgeTimer = Timer(const Duration(milliseconds: 1800), () {
+      if (mounted) setState(() => _superResBadgeText = null);
+    });
   }
 
   @override
@@ -167,6 +246,10 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     _volumeHideTimer?.cancel();
     _brightnessHideTimer?.cancel();
     _timeUpdateTimer?.cancel();
+    _seekFeedbackTimer?.cancel();
+    _rewindTimer?.cancel();
+    _speedPollTimer?.cancel();
+    _superResBadgeTimer?.cancel();
     VolumeController.instance.showSystemUI = true;
     super.dispose();
   }
@@ -238,6 +321,67 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     if (_isLocked || !_isLongPressing || widget.live) return;
     widget.onSetSpeed(_originalPlaybackSpeed);
     setState(() => _isLongPressing = false);
+  }
+
+  /// 点按屏幕左/右侧：按视频总长 1% 快退/快进（长视频步长大、短视频步长小）。
+  void _onSideTapSeek(bool isLeft) {
+    if (_isLocked || widget.live) {
+      _toggleControlsVisibility();
+      return;
+    }
+    final duration = _duration;
+    if (duration == Duration.zero) {
+      _toggleControlsVisibility();
+      return;
+    }
+    var step = Duration(milliseconds: duration.inMilliseconds ~/ 100);
+    if (step < const Duration(seconds: 1)) {
+      step = const Duration(seconds: 1);
+    }
+    final targetMs = isLeft
+        ? _position.inMilliseconds - step.inMilliseconds
+        : _position.inMilliseconds + step.inMilliseconds;
+    final clamped = targetMs.clamp(0, duration.inMilliseconds);
+    widget.player.seek(Duration(milliseconds: clamped));
+    setState(() {
+      _seekFeedbackIsLeft = isLeft;
+      _seekFeedbackText = '${isLeft ? '-' : '+'}${_formatDuration(step)}';
+    });
+    _seekFeedbackTimer?.cancel();
+    _seekFeedbackTimer = Timer(const Duration(milliseconds: 700), () {
+      if (mounted) setState(() => _seekFeedbackText = null);
+    });
+    _onUserInteraction();
+  }
+
+  /// 长按左侧：2 倍速快退（暂停并以 2 倍墙钟速度回退进度），松手恢复。
+  void _onRewindStart(LongPressStartDetails details) {
+    if (_isLocked || widget.live || _duration == Duration.zero) return;
+    _wasPlayingBeforeRewind = _isPlaying;
+    if (_isPlaying) {
+      widget.player.pause();
+    }
+    setState(() => _isRewinding = true);
+    _hideTimer?.cancel();
+    _rewindTimer?.cancel();
+    _rewindTimer =
+        Timer.periodic(const Duration(milliseconds: 250), (_) {
+      final pos = widget.player.state.position;
+      final back = pos - const Duration(milliseconds: 500);
+      widget.player
+          .seek(back < Duration.zero ? Duration.zero : back);
+    });
+  }
+
+  void _onRewindEnd() {
+    if (!_isRewinding) return;
+    _rewindTimer?.cancel();
+    _rewindTimer = null;
+    setState(() => _isRewinding = false);
+    if (_wasPlayingBeforeRewind) {
+      widget.player.play();
+    }
+    _onUserInteraction();
   }
 
   void _onSwipeStart(DragStartDetails details) {
@@ -523,6 +667,38 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
                       onTap: () => Navigator.of(context).pop(mode),
                     );
                   }),
+                  Builder(builder: (context) {
+                    final status = SuperResService.lastStatus;
+                    final vw = widget.player.state.width;
+                    final vh = widget.player.state.height;
+                    final String statusText;
+                    final Color statusColor;
+                    if (status == null || status.mode == SuperResMode.off) {
+                      statusText = '当前状态：未开启';
+                      statusColor =
+                          isDark ? Colors.white54 : Colors.black54;
+                    } else if (status.error != null) {
+                      statusText =
+                          '当前状态：着色器加载异常（${status.error}）';
+                      statusColor = Colors.redAccent;
+                    } else if (status.shaderCount > 0) {
+                      statusText =
+                          '当前状态：已生效 · ${status.shaderCount} 个着色器在链';
+                      statusColor = Colors.green;
+                    } else {
+                      statusText = '当前状态：未读回着色器，可能未生效';
+                      statusColor = Colors.orange;
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+                      child: Text(
+                        vw != null && vh != null && vw > 0
+                            ? '$statusText · 视频 ${vw}×$vh'
+                            : statusText,
+                        style: TextStyle(fontSize: 12, color: statusColor),
+                      ),
+                    );
+                  }),
                 ],
               ),
             ),
@@ -534,6 +710,16 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     if (result != null) {
       setState(() => _superResMode = result);
       await widget.onSetSuperResMode(result);
+      if (!mounted) return;
+      if (result != SuperResMode.off) {
+        // 等父层把着色器应用完（回读在 SuperResService.lastStatus 里），
+        // 再显示带验证信息的徽标
+        Future.delayed(const Duration(milliseconds: 600), () {
+          if (mounted && _superResMode != SuperResMode.off) {
+            _showSuperResBadge();
+          }
+        });
+      }
     }
   }
 
@@ -588,7 +774,12 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
         _buildCenterPlayPause(),
         _buildProgressBar(),
         _buildBottomControls(),
-        if (_isLongPressing && !_isLocked) _buildLongPressIndicator(),
+        if ((_isLongPressing || _isRewinding) && !_isLocked)
+          _buildLongPressIndicator(),
+        if (_seekFeedbackText != null) _buildSeekFeedback(),
+        if (_isBuffering && !widget.isLoadingVideo) _buildBufferingChip(),
+        if (_superResMode != SuperResMode.off) _buildSuperResPill(),
+        if (_superResBadgeText != null) _buildSuperResBadge(),
         if (_isFullscreen && _showBrightnessIndicator && !_isLocked)
           _buildBrightnessIndicator(),
         if (_isFullscreen) _buildRightOverlay(),
@@ -622,14 +813,10 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
             Expanded(
               flex: 1,
               child: GestureDetector(
-                onTap: _toggleControlsVisibility,
-                onLongPressStart: _onLongPressStart,
-                onLongPressEnd: _onLongPressEnd,
-                onLongPressCancel: () {
-                  if (_isLongPressing) {
-                    _onLongPressEnd(const LongPressEndDetails());
-                  }
-                },
+                onTap: () => _onSideTapSeek(true),
+                onLongPressStart: _onRewindStart,
+                onLongPressEnd: (_) => _onRewindEnd(),
+                onLongPressCancel: _onRewindEnd,
                 onHorizontalDragStart: _onSwipeStart,
                 onHorizontalDragUpdate: _onSwipeUpdate,
                 onHorizontalDragEnd: _onSwipeEnd,
@@ -660,7 +847,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
             Expanded(
               flex: 1,
               child: GestureDetector(
-                onTap: _toggleControlsVisibility,
+                onTap: () => _onSideTapSeek(false),
                 onLongPressStart: _onLongPressStart,
                 onLongPressEnd: _onLongPressEnd,
                 onLongPressCancel: () {
@@ -1032,21 +1219,181 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   }
 
   Widget _buildLongPressIndicator() {
-    return const Positioned(
+    final rewinding = _isRewinding;
+    return Positioned(
       top: 10,
       left: 0,
       right: 0,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text('2x',
+          const Text('2x',
               style: TextStyle(
                   color: Colors.white,
                   fontSize: 18,
                   fontWeight: FontWeight.bold)),
-          SizedBox(width: 6),
-          Icon(Icons.fast_forward, color: Colors.white, size: 32),
+          const SizedBox(width: 6),
+          Icon(rewinding ? Icons.fast_rewind : Icons.fast_forward,
+              color: Colors.white, size: 32),
+          const SizedBox(width: 6),
+          Text(rewinding ? '快退中' : '快进中',
+              style: const TextStyle(color: Colors.white, fontSize: 14)),
         ],
+      ),
+    );
+  }
+
+  /// 两侧点按快退/快进的反馈（对应一侧的圆形图标 + 步长）。
+  Widget _buildSeekFeedback() {
+    final isLeft = _seekFeedbackIsLeft;
+    return Positioned(
+      left: isLeft ? 40 : null,
+      right: isLeft ? null : 40,
+      top: 0,
+      bottom: 0,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(isLeft ? Icons.fast_rewind : Icons.fast_forward,
+                  color: Colors.white, size: 20),
+              const SizedBox(width: 6),
+              Text(
+                _seekFeedbackText!,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 缓冲提示：已缓存进度百分比 + 当前缓存网速（seek/拖动/网络抖动时出现）。
+  Widget _buildBufferingChip() {
+    final duration = _duration;
+    final buffer = widget.player.state.buffer;
+    String text = '缓冲中…';
+    if (duration.inMilliseconds > 0) {
+      final pct =
+          (buffer.inMilliseconds / duration.inMilliseconds * 100)
+              .clamp(0, 100)
+              .toStringAsFixed(0);
+      text = '缓冲中 $pct%';
+    }
+    if (_cacheSpeedBps != null && _cacheSpeedBps! > 0) {
+      text += ' · ${_formatSpeed(_cacheSpeedBps!)}';
+    }
+    return Positioned(
+      bottom: _isFullscreen ? 92 : 74,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.65),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                text,
+                style: const TextStyle(color: Colors.white, fontSize: 12.5),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 超分开启状态小药丸：仅随控制栏一起显示，不遮挡观看。
+  Widget _buildSuperResPill() {
+    return Positioned(
+      top: _isFullscreen ? 40 : 36,
+      left: 0,
+      right: 0,
+      child: AnimatedOpacity(
+        opacity: (_controlsVisible && !_isLocked) ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 200),
+        child: IgnorePointer(
+          child: Center(
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.auto_awesome,
+                      color: Colors.white, size: 12),
+                  const SizedBox(width: 4),
+                  Text(
+                    '超分 · ${_superResMode.label}',
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 超分开启/失败的短暂中心徽标（验证用，约 1.8 秒后消失）。
+  Widget _buildSuperResBadge() {
+    final failed = _superResBadgeText!.contains('失败');
+    return Positioned.fill(
+      child: Center(
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                failed ? Icons.error_outline : Icons.auto_awesome,
+                color: failed ? Colors.redAccent : Colors.white,
+                size: 18,
+              ),
+              const SizedBox(width: 7),
+              Text(
+                _superResBadgeText!,
+                style: const TextStyle(color: Colors.white, fontSize: 13.5),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1252,6 +1599,7 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
   double _dragValue = 0.0;
   bool _isSeeking = false; // 新增：标记是否正在 seek
   StreamSubscription<Duration>? _positionSubscription;
+  StreamSubscription<Duration>? _bufferSubscription;
 
   @override
   void initState() {
@@ -1261,11 +1609,17 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
         setState(() {});
       }
     });
+    _bufferSubscription = widget.player.stream.buffer.listen((_) {
+      if (mounted && !_isDragging) {
+        setState(() {});
+      }
+    });
   }
 
   @override
   void dispose() {
     _positionSubscription?.cancel();
+    _bufferSubscription?.cancel();
     super.dispose();
   }
 
@@ -1363,6 +1717,16 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
             builder: (context, constraints) {
               final progressWidth = constraints.maxWidth;
               final progressValue = value.clamp(0.0, 1.0);
+              // 已缓存区间（缓存到的位置 / 总时长）
+              double bufferedValue = 0.0;
+              if (!widget.live && duration.inMilliseconds > 0) {
+                bufferedValue = (widget.player.state.buffer.inMilliseconds /
+                        duration.inMilliseconds)
+                    .clamp(0.0, 1.0);
+                if (bufferedValue < progressValue) {
+                  bufferedValue = progressValue;
+                }
+              }
               final thumbPosition = (progressValue * progressWidth)
                   .clamp(8.0, progressWidth - 8.0);
               return Stack(
@@ -1380,6 +1744,19 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
                       ),
                     ),
                   ),
+                  if (bufferedValue > 0)
+                    Positioned(
+                      left: 0,
+                      top: 9,
+                      child: Container(
+                        width: bufferedValue * progressWidth,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(3),
+                          color: Colors.white.withOpacity(0.55),
+                        ),
+                      ),
+                    ),
                   Positioned(
                     left: 0,
                     top: 9,
