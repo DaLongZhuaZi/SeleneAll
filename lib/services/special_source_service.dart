@@ -11,6 +11,7 @@ import 'user_data_service.dart';
 ///   与网页端 filterRecordsBySpecialSourceContext 的口径一致。
 class SpecialSourceService {
   static Set<String>? _cachedKeys;
+  static List<Map<String, dynamic>>? _cachedSources;
   static String? _cachedForServer;
 
   /// 里世界模式是否开启
@@ -21,19 +22,20 @@ class SpecialSourceService {
   /// 清除特殊源 key 缓存（切换服务器或退出登录时调用）
   static void clearCache() {
     _cachedKeys = null;
+    _cachedSources = null;
     _cachedForServer = null;
   }
 
-  /// 获取特殊源 key 集合。
+  /// 获取特殊源完整列表（每项含 key、name 等字段）。
   ///
   /// 通过 /api/source-search/sources?special=1 拉取（该接口在 special=1 时
-  /// 只返回特殊源）。结果按服务器地址缓存；拉取失败时返回上次缓存或空集。
-  static Future<Set<String>> getSpecialSourceKeys({
+  /// 只返回特殊源）。结果按服务器地址缓存；拉取失败时返回上次缓存或空列表。
+  static Future<List<Map<String, dynamic>>> getSpecialSources({
     bool forceRefresh = false,
   }) async {
     final server = await UserDataService.getServerUrl();
-    if (!forceRefresh && _cachedKeys != null && _cachedForServer == server) {
-      return _cachedKeys!;
+    if (!forceRefresh && _cachedSources != null && _cachedForServer == server) {
+      return _cachedSources!;
     }
     try {
       // 该接口返回 {"sources": [...]} 结构
@@ -44,23 +46,36 @@ class SpecialSourceService {
       );
       if (response.success && response.data != null) {
         final list = response.data!['sources'];
-        final keys = <String>{};
+        final sources = <Map<String, dynamic>>[];
         if (list is List) {
           for (final item in list) {
             if (item is Map<String, dynamic>) {
-              final key = item['key'];
-              if (key is String && key.isNotEmpty) {
-                keys.add(key);
-              }
+              sources.add(item);
             }
           }
         }
-        _cachedKeys = keys;
+        _cachedSources = sources;
+        _cachedKeys = {
+          for (final s in sources)
+            if (s['key'] is String && (s['key'] as String).isNotEmpty)
+              s['key'] as String,
+        };
         _cachedForServer = server;
-        return keys;
+        return sources;
       }
     } catch (_) {
-      // 静默失败：返回缓存或空集
+      // 静默失败：返回缓存或空列表
+    }
+    return _cachedSources ?? <Map<String, dynamic>>[];
+  }
+
+  /// 获取特殊源 key 集合（与 [getSpecialSources] 共用同一次拉取与缓存）。
+  static Future<Set<String>> getSpecialSourceKeys({
+    bool forceRefresh = false,
+  }) async {
+    final server = await UserDataService.getServerUrl();
+    if (forceRefresh || _cachedKeys == null || _cachedForServer != server) {
+      await getSpecialSources(forceRefresh: forceRefresh);
     }
     return _cachedKeys ?? <String>{};
   }

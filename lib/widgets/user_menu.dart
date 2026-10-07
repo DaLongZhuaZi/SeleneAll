@@ -5,6 +5,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/user_data_service.dart';
 import '../screens/login_screen.dart';
+import '../screens/special_world_screen.dart';
 import '../services/douban_cache_service.dart';
 import '../services/page_cache_service.dart';
 import '../services/live_service.dart';
@@ -13,8 +14,6 @@ import '../services/version_service.dart';
 import '../utils/device_utils.dart';
 import '../utils/font_utils.dart';
 import 'update_dialog.dart';
-import 'favorites_grid.dart';
-import 'history_grid.dart';
 
 class UserMenu extends StatefulWidget {
   final bool isDarkMode;
@@ -39,7 +38,6 @@ class _UserMenuState extends State<UserMenu> {
   String _version = '';
   bool _preferSpeedTest = true;
   bool _localSearch = false;
-  bool _specialMode = false;
   bool _isLocalMode = false;
 
   @override
@@ -69,7 +67,6 @@ class _UserMenuState extends State<UserMenu> {
     final m3u8ProxyUrl = await UserDataService.getM3u8ProxyUrl();
     final preferSpeedTest = await UserDataService.getPreferSpeedTest();
     final localSearch = await UserDataService.getLocalSearch();
-    final specialMode = await UserDataService.getSpecialMode();
 
     if (mounted) {
       setState(() {
@@ -81,7 +78,6 @@ class _UserMenuState extends State<UserMenu> {
         _m3u8ProxyUrl = m3u8ProxyUrl;
         _preferSpeedTest = preferSpeedTest;
         _localSearch = localSearch;
-        _specialMode = specialMode;
       });
     }
   }
@@ -851,29 +847,73 @@ class _UserMenuState extends State<UserMenu> {
                             ? const Color(0xFF374151)
                             : const Color(0xFFe5e7eb),
                       ),
-                      _buildToggleOption(
-                        title: '里世界（特殊源）',
-                        value: _specialMode,
-                        onChanged: (value) async {
-                          await UserDataService.saveSpecialMode(value);
-                          if (!mounted) return;
-                          setState(() {
-                            _specialMode = value;
-                          });
-                          // 刷新收藏与历史列表，使其按新模式重新过滤
-                          await FavoritesGrid.refreshFavorites();
-                          await HistoryGrid.refreshHistory();
-                          if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(value
-                                  ? '已进入里世界：搜索、收藏与记录仅显示特殊源'
-                                  : '已退出里世界：搜索、收藏与记录仅显示普通源'),
-                              duration: const Duration(seconds: 2),
+                      // 进入里世界：替换整个导航栈，进入独立界面
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () async {
+                            final navigator = Navigator.of(context);
+                            await UserDataService.saveSpecialMode(true);
+                            navigator.pushAndRemoveUntil(
+                              MaterialPageRoute(
+                                builder: (_) => const SpecialWorldScreen(),
+                              ),
+                              (route) => false,
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
                             ),
-                          );
-                        },
-                        icon: LucideIcons.moon,
+                            child: Row(
+                              children: [
+                                Icon(
+                                  LucideIcons.moon,
+                                  size: 20,
+                                  color: widget.isDarkMode
+                                      ? const Color(0xFF9ca3af)
+                                      : const Color(0xFF6b7280),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '进入里世界',
+                                        style: FontUtils.poppins(
+                                          fontSize: 16,
+                                          color: widget.isDarkMode
+                                              ? const Color(0xFFffffff)
+                                              : const Color(0xFF1f2937),
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      Text(
+                                        '特殊源专属界面，与普通模式完全隔离',
+                                        style: FontUtils.poppins(
+                                          fontSize: 12,
+                                          color: widget.isDarkMode
+                                              ? const Color(0xFF9ca3af)
+                                              : const Color(0xFF6b7280),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Icon(
+                                  LucideIcons.chevronRight,
+                                  size: 18,
+                                  color: widget.isDarkMode
+                                      ? const Color(0xFF9ca3af)
+                                      : const Color(0xFF6b7280),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
                     ],
                     // 分割线

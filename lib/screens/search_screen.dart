@@ -23,8 +23,13 @@ import 'player_screen.dart';
 enum SortOrder { none, asc, desc }
 
 class SearchScreen extends StatefulWidget {
+  /// 里世界从源列表点入时预选的来源名：新搜索开始时来源筛选默认落到该源，
+  /// 而不是“全部来源”。普通入口不传，保持原行为。
+  final String? initialSourceName;
+
   const SearchScreen({
     super.key,
+    this.initialSourceName,
   });
 
   @override
@@ -491,8 +496,8 @@ class _SearchScreenState extends State<SearchScreen>
       _searchResults.clear();
       _searchProgress = null; // 清空进度信息
       _useAggregatedView = true; // 默认开启聚合
-      // 重置筛选和排序
-      _selectedSource = 'all';
+      // 重置筛选和排序（里世界带预选来源时，来源筛选落到该源）
+      _selectedSource = widget.initialSourceName ?? 'all';
       _selectedYear = 'all';
       _selectedTitle = 'all';
       _yearSortOrder = SortOrder.none;

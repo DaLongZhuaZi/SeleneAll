@@ -10,7 +10,6 @@ class UserDataService {
   static const String _m3u8ProxyUrlKey = 'm3u8_proxy_url';
   static const String _preferSpeedTestKey = 'prefer_speed_test';
   static const String _localSearchKey = 'local_search';
-  static const String _specialModeKey = 'special_mode';
   static const String _isLocalModeKey = 'is_local_mode';
   
   // 内存缓存
@@ -239,16 +238,18 @@ class UserDataService {
     return prefs.getBool(_localSearchKey) ?? false;
   }
 
-  // 保存里世界（MoonTVPlus 特殊源）模式设置
+  // 保存里世界（MoonTVPlus 特殊源）模式设置。
+  // 里世界模式只保存在内存中，不做持久化：App 关闭/被杀后重启，
+  // 必然回到普通模式（“关闭 App 自动退出里世界”）。
+  static bool _specialModeInMemory = false;
+
   static Future<void> saveSpecialMode(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_specialModeKey, enabled);
+    _specialModeInMemory = enabled;
   }
 
   // 获取里世界（MoonTVPlus 特殊源）模式设置（默认为 false）
   static Future<bool> getSpecialMode() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_specialModeKey) ?? false;
+    return _specialModeInMemory;
   }
 
   // 保存本地模式设置
