@@ -1,3 +1,5 @@
+import 'dart:io' show HttpStatus;
+
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import 'user_data_service.dart';
@@ -34,15 +36,37 @@ class ProxyFallbackFileService extends HttpFileService {
     String url, {
     Map<String, String>? headers,
   }) async {
+    FileServiceResponse direct;
     try {
-      return await super.get(url, headers: headers);
+      direct = await super.get(url, headers: headers);
     } catch (directError) {
+      // 连接层失败（重置/超时/DNS 等抛异常的形态）：走代理兜底。
       final proxy = await _buildProxyRequest(url);
       if (proxy == null) {
         rethrow;
       }
       return await super.get(proxy.url, headers: proxy.headers);
     }
+    // 注意：HttpFileService 对 HTTP 错误状态并不抛异常——403/404/
+    // 5xx 会带着 statusCode 原样返回，状态码校验在 WebHelper 里、
+    // 于 get() 返回之后才抛 HttpExceptionWithStatus。若只 catch
+    // 异常，防盗链 403 这类最常见的失败形态永远触发不了兜底。
+    // 200/202 是新文件、304 是缓存仍有效，都原样返回。
+    if (direct.statusCode == HttpStatus.ok ||
+        direct.statusCode == HttpStatus.accepted ||
+        direct.statusCode == HttpStatus.notModified) {
+      return direct;
+    }
+    final proxy = await _buildProxyRequest(url);
+    if (proxy == null) {
+      // 无兜底可用：原响应（含未消费的响应流）交回原报错路径。
+      return direct;
+    }
+    // 丢弃直连响应体释放连接，再走代理。
+    try {
+      await direct.content.drain<void>();
+    } catch (_) {}
+    return await super.get(proxy.url, headers: proxy.headers);
   }
 
   /// 构造代理请求；不适用（非特殊模式 / 非远程图 / 已是代理地址 /
