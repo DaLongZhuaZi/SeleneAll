@@ -14,6 +14,7 @@ import '../widgets/history_grid.dart';
 import '../widgets/video_menu_bottom_sheet.dart';
 import 'player_screen.dart';
 import 'search_screen.dart';
+import 'source_browse_screen.dart';
 
 /// 里世界（MoonTVPlus 特殊源）专属界面。
 ///
@@ -73,11 +74,24 @@ class SpecialWorldScreen extends StatefulWidget {
 class _SpecialWorldScreenState extends State<SpecialWorldScreen> {
   int _tabIndex = 0;
 
+  /// 每个标签页一个独立导航栈：播放页/浏览页等二级页面都压到当前
+  /// 标签自己的栈里，返回时落回该标签的内容；标签栈为空时系统
+  /// 返回才退出 App。避免二级页面与标签页共用根导航导致的错乱。
+  final List<GlobalKey<NavigatorState>> _tabNavigatorKeys = [
+    GlobalKey<NavigatorState>(),
+    GlobalKey<NavigatorState>(),
+    GlobalKey<NavigatorState>(),
+    GlobalKey<NavigatorState>(),
+  ];
+
   /// 从首页源列表点入搜索时预选的来源名（按来源名筛选，口径同搜索页）。
   String? _presetSourceName;
 
   /// 递增以强制重建搜索页，使预选来源生效。
   int _searchSession = 0;
+
+  NavigatorState? get _activeTabNavigator =>
+      _tabNavigatorKeys[_tabIndex].currentState;
 
   Future<void> _exitWorld() async {
     await UserDataService.saveSpecialMode(false);
@@ -89,16 +103,15 @@ class _SpecialWorldScreenState extends State<SpecialWorldScreen> {
   }
 
   void _openPlayer(PlayRecord record) {
-    Navigator.of(context).push(
+    // 压入当前标签页自己的导航栈（该栈位于里世界主题子树内，
+    // 播放页自动继承里世界主题，无需再手动包裹 Theme）。
+    _activeTabNavigator?.push(
       MaterialPageRoute(
-        builder: (_) => Theme(
-          data: SpecialWorldScreen.worldTheme,
-          child: PlayerScreen(
-            source: record.source,
-            id: record.id,
-            title: record.title,
-            year: record.year,
-          ),
+        builder: (_) => PlayerScreen(
+          source: record.source,
+          id: record.id,
+          title: record.title,
+          year: record.year,
         ),
       ),
     );
@@ -165,8 +178,37 @@ class _SpecialWorldScreenState extends State<SpecialWorldScreen> {
     setState(() {
       _presetSourceName = sourceName;
       _searchSession++;
+      // 换一把全新的 Navigator Key：仅换外层 ValueKey 时 GlobalKey
+      // 会保住旧 Navigator 状态，预选来源不生效，必须连栈一起重建。
+      _tabNavigatorKeys[1] = GlobalKey<NavigatorState>();
       _tabIndex = 1;
     });
+  }
+
+  /// 点源 → 打开该源的分类浏览页（压入首页标签的导航栈）。
+  void _openSourceBrowse(Map<String, dynamic> source) {
+    final key = source['key'] as String?;
+    final name =
+        (source['name'] as String?) ?? (source['key'] as String?) ?? '未知来源';
+    if (key == null) return;
+    _tabNavigatorKeys[0].currentState?.push(
+      MaterialPageRoute(
+        builder: (_) => SourceBrowseScreen(
+          sourceKey: key,
+          sourceName: name,
+          onVideoTap: (info) =>
+              _onMenuActionFromVideoInfo(info, VideoMenuAction.play),
+          onGlobalMenuAction: _onMenuActionFromVideoInfo,
+          onSearchSource: () {
+            // 浏览页在首页栈内：先回到首页根，再切到预选该源的搜索页
+            _tabNavigatorKeys[0]
+                .currentState
+                ?.popUntil((route) => route.isFirst);
+            _goSearchWithSource(name);
+          },
+        ),
+      ),
+    );
   }
 
   @override
@@ -174,8 +216,13 @@ class _SpecialWorldScreenState extends State<SpecialWorldScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) {
-          // 里世界根页面按返回键：直接退出 App，不回普通模式
+        if (didPop) return;
+        // 系统返回：先退当前标签页栈内的二级页面；已在该标签
+        // 根页面时才退出 App——里世界不回普通模式。
+        final navigator = _activeTabNavigator;
+        if (navigator != null && navigator.canPop()) {
+          navigator.pop();
+        } else {
           SystemNavigator.pop();
         }
       },
@@ -206,18 +253,35 @@ class _SpecialWorldScreenState extends State<SpecialWorldScreen> {
           body: IndexedStack(
             index: _tabIndex,
             children: [
-              _buildHomeTab(),
-              SearchScreen(
-                key: ValueKey('world-search-$_searchSession'),
-                initialSourceName: _presetSourceName,
+              _TabNavigator(
+                navigatorKey: _tabNavigatorKeys[0],
+                rootBuilder: (_) => Scaffold(body: _buildHomeTab()),
               ),
-              FavoritesGrid(
-                onVideoTap: _openPlayer,
-                onGlobalMenuAction: _onMenuActionFromVideoInfo,
+              _TabNavigator(
+                // 预选来源变化时整体重建搜索标签栈，使新 SearchScreen 生效
+                key: ValueKey('world-search-tab-$_searchSession'),
+                navigatorKey: _tabNavigatorKeys[1],
+                rootBuilder: (_) => SearchScreen(
+                  initialSourceName: _presetSourceName,
+                ),
               ),
-              HistoryGrid(
-                onVideoTap: _openPlayer,
-                onGlobalMenuAction: _onMenuAction,
+              _TabNavigator(
+                navigatorKey: _tabNavigatorKeys[2],
+                rootBuilder: (_) => Scaffold(
+                  body: FavoritesGrid(
+                    onVideoTap: _openPlayer,
+                    onGlobalMenuAction: _onMenuActionFromVideoInfo,
+                  ),
+                ),
+              ),
+              _TabNavigator(
+                navigatorKey: _tabNavigatorKeys[3],
+                rootBuilder: (_) => Scaffold(
+                  body: HistoryGrid(
+                    onVideoTap: _openPlayer,
+                    onGlobalMenuAction: _onMenuAction,
+                  ),
+                ),
               ),
             ],
           ),
@@ -373,17 +437,35 @@ class _SpecialWorldScreenState extends State<SpecialWorldScreen> {
                 ),
                 trailing: const Icon(LucideIcons.chevronRight,
                     size: 18, color: Color(0xFF9C7A84)),
-                onTap: () {
-                  final name = (source['name'] as String?) ??
-                      (source['key'] as String?);
-                  if (name != null) {
-                    _goSearchWithSource(name);
-                  }
-                },
+                onTap: () => _openSourceBrowse(source),
               ),
           ],
         );
       },
+    );
+  }
+}
+
+/// 标签页独立导航栈：根页面由 [rootBuilder] 构建，二级页面
+/// （播放页、源浏览页等）压入本栈，返回逻辑由里世界根统一调度。
+class _TabNavigator extends StatelessWidget {
+  final GlobalKey<NavigatorState> navigatorKey;
+  final WidgetBuilder rootBuilder;
+
+  const _TabNavigator({
+    super.key,
+    required this.navigatorKey,
+    required this.rootBuilder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      key: navigatorKey,
+      onGenerateRoute: (settings) => MaterialPageRoute(
+        settings: settings,
+        builder: rootBuilder,
+      ),
     );
   }
 }
