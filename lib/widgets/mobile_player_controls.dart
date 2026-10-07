@@ -93,8 +93,10 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   bool _isRewinding = false;
   bool _wasPlayingBeforeRewind = false;
   Timer? _rewindTimer;
-  // 缓冲状态与缓存网速
+  // 缓冲状态与缓存信息（从 mpv 属性轮询：缓冲进度/已缓存时长/网速）
   bool _isBuffering = false;
+  int? _cacheBufferingPct;
+  double? _cacheDurationSecs;
   int? _cacheSpeedBps;
   Timer? _speedPollTimer;
   // 超分开启提示（短暂徽标）
@@ -123,6 +125,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
       if (!mounted) return;
       _forceStartHideTimer();
       widget.onControlsVisibilityChanged(true);
+      _updateBufferPolling();
     });
   }
 
@@ -134,6 +137,9 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
       setState(() => _controlsVisible = true);
       widget.onControlsVisibilityChanged(true);
       _startHideTimer();
+    }
+    if (oldWidget.isLoadingVideo != widget.isLoadingVideo) {
+      _updateBufferPolling();
     }
   }
 
@@ -181,30 +187,70 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     _subscriptions.add(widget.player.stream.buffering.listen((buffering) {
       if (!mounted) return;
       setState(() => _isBuffering = buffering);
-      _updateSpeedPolling();
+      _updateBufferPolling();
     }));
   }
 
-  /// 缓冲期间轮询 mpv 的 cache-speed（字节/秒），供缓冲提示显示网速。
-  void _updateSpeedPolling() {
-    if (_isBuffering) {
-      _speedPollTimer ??=
-          Timer.periodic(const Duration(milliseconds: 500), (_) async {
-        final platform = widget.player.platform;
-        if (platform is! NativePlayer) return;
-        try {
-          final raw = await platform.getProperty('cache-speed');
-          final speed = int.tryParse(raw.trim());
-          if (mounted && speed != null && speed != _cacheSpeedBps) {
-            setState(() => _cacheSpeedBps = speed);
-          }
-        } catch (_) {}
-      });
+  /// 缓冲/初始加载期间轮询 mpv 缓存属性：cache-buffering-state（缓冲
+  /// 进度 %）、demuxer-cache-duration（已缓存秒数）、cache-speed（网速）。
+  /// 数据存字段驱动 UI 刷新——上一版只在网速变化时刷新且百分比取自
+  /// player.state.buffer，网速恒定时界面就冻住了（用户实测卡 0%）。
+  void _updateBufferPolling() {
+    if (_isBuffering || widget.isLoadingVideo) {
+      if (_speedPollTimer == null) {
+        _pollBufferStats();
+        _speedPollTimer = Timer.periodic(
+          const Duration(milliseconds: 400),
+          (_) => _pollBufferStats(),
+        );
+      }
     } else {
       _speedPollTimer?.cancel();
       _speedPollTimer = null;
+      _cacheBufferingPct = null;
+      _cacheDurationSecs = null;
       _cacheSpeedBps = null;
     }
+  }
+
+  Future<void> _pollBufferStats() async {
+    final platform = widget.player.platform;
+    if (platform is! NativePlayer) return;
+    try {
+      final results = await Future.wait([
+        platform.getProperty('cache-buffering-state'),
+        platform.getProperty('demuxer-cache-duration'),
+        platform.getProperty('cache-speed'),
+      ]);
+      if (!mounted) return;
+      final pct = int.tryParse(results[0].trim());
+      final dur = double.tryParse(results[1].trim());
+      final spd = int.tryParse(results[2].trim());
+      if (pct != _cacheBufferingPct ||
+          dur != _cacheDurationSecs ||
+          spd != _cacheSpeedBps) {
+        setState(() {
+          _cacheBufferingPct = pct;
+          _cacheDurationSecs = dur;
+          _cacheSpeedBps = spd;
+        });
+      }
+    } catch (_) {}
+  }
+
+  /// 缓冲信息文案（百分比/已缓存秒数/网速），加载层与缓冲浮层共用。
+  String _bufferingInfoText() {
+    final parts = <String>[];
+    if (_cacheBufferingPct != null) {
+      parts.add('缓冲 $_cacheBufferingPct%');
+    }
+    if (_cacheDurationSecs != null && _cacheDurationSecs! >= 1) {
+      parts.add('已缓存 ${_cacheDurationSecs!.toStringAsFixed(0)} 秒');
+    }
+    if (_cacheSpeedBps != null && _cacheSpeedBps! > 0) {
+      parts.add(_formatSpeed(_cacheSpeedBps!));
+    }
+    return parts.join(' · ');
   }
 
   String _formatSpeed(int bytesPerSecond) {
@@ -747,16 +793,25 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   @override
   Widget build(BuildContext context) {
     if (widget.isLoadingVideo) {
+      final info = _bufferingInfoText();
       return Container(
         color: Colors.black.withValues(alpha: 0.7),
-        child: const Center(
+        child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(color: Colors.white, strokeWidth: 3),
-              SizedBox(height: 16),
-              Text('加载中...',
+              const CircularProgressIndicator(
+                  color: Colors.white, strokeWidth: 3),
+              const SizedBox(height: 16),
+              const Text('加载中...',
                   style: TextStyle(color: Colors.white, fontSize: 14)),
+              if (info.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(info,
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.75),
+                        fontSize: 12.5)),
+              ],
             ],
           ),
         ),
@@ -777,7 +832,8 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
         if ((_isLongPressing || _isRewinding) && !_isLocked)
           _buildLongPressIndicator(),
         if (_seekFeedbackText != null) _buildSeekFeedback(),
-        if (_isBuffering && !widget.isLoadingVideo) _buildBufferingChip(),
+        if (_isBuffering && !widget.isLoadingVideo) _buildBufferingOverlay(),
+        if (_isFullscreen) _buildSideSeekButtons(),
         if (_superResMode != SuperResMode.off) _buildSuperResPill(),
         if (_superResBadgeText != null) _buildSuperResBadge(),
         if (_isFullscreen && _showBrightnessIndicator && !_isLocked)
@@ -813,7 +869,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
             Expanded(
               flex: 1,
               child: GestureDetector(
-                onTap: () => _onSideTapSeek(true),
+                onTap: _toggleControlsVisibility,
                 onLongPressStart: _onRewindStart,
                 onLongPressEnd: (_) => _onRewindEnd(),
                 onLongPressCancel: _onRewindEnd,
@@ -847,7 +903,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
             Expanded(
               flex: 1,
               child: GestureDetector(
-                onTap: () => _onSideTapSeek(false),
+                onTap: _toggleControlsVisibility,
                 onLongPressStart: _onLongPressStart,
                 onLongPressEnd: _onLongPressEnd,
                 onLongPressCancel: () {
@@ -1221,24 +1277,31 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   Widget _buildLongPressIndicator() {
     final rewinding = _isRewinding;
     return Positioned(
-      top: 10,
+      top: 12,
       left: 0,
       right: 0,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Text('2x',
-              style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold)),
-          const SizedBox(width: 6),
-          Icon(rewinding ? Icons.fast_rewind : Icons.fast_forward,
-              color: Colors.white, size: 32),
-          const SizedBox(width: 6),
-          Text(rewinding ? '快退中' : '快进中',
-              style: const TextStyle(color: Colors.white, fontSize: 14)),
-        ],
+      child: Center(
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.65),
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(rewinding ? Icons.fast_rewind : Icons.fast_forward,
+                  color: Colors.white, size: 26),
+              const SizedBox(width: 7),
+              Text(rewinding ? '2x 快退中' : '2x 快进中',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1279,47 +1342,101 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     );
   }
 
-  /// 缓冲提示：已缓存进度百分比 + 当前缓存网速（seek/拖动/网络抖动时出现）。
-  Widget _buildBufferingChip() {
-    final duration = _duration;
-    final buffer = widget.player.state.buffer;
-    String text = '缓冲中…';
-    if (duration.inMilliseconds > 0) {
-      final pct =
-          (buffer.inMilliseconds / duration.inMilliseconds * 100)
-              .clamp(0, 100)
-              .toStringAsFixed(0);
-      text = '缓冲中 $pct%';
-    }
-    if (_cacheSpeedBps != null && _cacheSpeedBps! > 0) {
-      text += ' · ${_formatSpeed(_cacheSpeedBps!)}';
-    }
-    return Positioned(
-      bottom: _isFullscreen ? 92 : 74,
-      left: 0,
-      right: 0,
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.65),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(
-                width: 13,
-                height: 13,
-                child: CircularProgressIndicator(
-                  color: Colors.white,
-                  strokeWidth: 2,
+  /// 缓冲浮层：屏幕中下部居中（不依赖底部布局，全屏/窗口一致显示），
+  /// 展示缓冲进度、已缓存时长与实时网速。
+  Widget _buildBufferingOverlay() {
+    final info = _bufferingInfoText();
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Align(
+          alignment: const Alignment(0, 0.45),
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.65),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
+                const SizedBox(width: 9),
+                Text(
+                  info.isEmpty ? '缓冲中…' : info,
+                  style:
+                      const TextStyle(color: Colors.white, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 两侧可见的快退/快进按钮（随控制栏显隐）：点按按总长 1% 跳进，
+  /// 明确按钮避免整侧点按误触；长按快退/快进仍走整屏手势、无按钮。
+  Widget _buildSideSeekButtons() {
+    if (widget.live || _isLocked || _duration == Duration.zero) {
+      return const SizedBox.shrink();
+    }
+    var step = Duration(milliseconds: _duration.inMilliseconds ~/ 100);
+    if (step < const Duration(seconds: 1)) {
+      step = const Duration(seconds: 1);
+    }
+    Widget button(bool isLeft) {
+      return GestureDetector(
+        onTap: () => _onSideTapSeek(isLeft),
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.black.withValues(alpha: 0.35),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(isLeft ? Icons.fast_rewind : Icons.fast_forward,
+                  color: Colors.white, size: 24),
               Text(
-                text,
-                style: const TextStyle(color: Colors.white, fontSize: 12.5),
+                '${isLeft ? '-' : '+'}${_formatDuration(step)}',
+                style: const TextStyle(color: Colors.white, fontSize: 9),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Positioned.fill(
+      child: AnimatedOpacity(
+        opacity: _controlsVisible ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 200),
+        child: IgnorePointer(
+          ignoring: !_controlsVisible,
+          child: Stack(
+            children: [
+              Positioned(
+                left: 14,
+                top: 0,
+                bottom: 0,
+                child: Center(child: button(true)),
+              ),
+              Positioned(
+                right: 14,
+                top: 0,
+                bottom: 0,
+                child: Center(child: button(false)),
               ),
             ],
           ),
