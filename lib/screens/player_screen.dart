@@ -682,7 +682,26 @@ class _PlayerScreenState extends State<PlayerScreen>
             startAt: startAt);
       } else {
         // 本地播放：根据设备类型调用对应播放器的 updateDataSource
-        await _videoPlayerController?.updateDataSource(finalUrl,
+        var playUrl = finalUrl;
+        // 里世界（特殊模式）与网页版对齐走服务端中转：网页版经
+        // cms-proxy 拿到的是 proxy-m3u8 包装地址（服务端抓列表、
+        // 去广告、分片中转），App 直连源站则常被重置/限速（封面
+        // 已实证同类问题）。proxySegments=true 让分片也经服务器中转。
+        // 用户已自设 m3u8 代理时不叠加。
+        if (m3u8ProxyUrl.isEmpty &&
+            (newUrl.startsWith('http://') ||
+                newUrl.startsWith('https://')) &&
+            !newUrl.contains('/api/proxy-m3u8') &&
+            await UserDataService.getSpecialMode()) {
+          final serverUrl = await UserDataService.getServerUrl();
+          if (serverUrl != null && serverUrl.isNotEmpty) {
+            final base = serverUrl.replaceAll(RegExp(r'/+$'), '');
+            playUrl =
+                '$base/api/proxy-m3u8?url=${Uri.encodeComponent(newUrl)}&proxySegments=true';
+            print('里世界播放走服务端中转: $playUrl');
+          }
+        }
+        await _videoPlayerController?.updateDataSource(playUrl,
             startAt: startAt);
       }
     } catch (e) {

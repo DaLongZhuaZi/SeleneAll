@@ -106,6 +106,14 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   Timer? _superResBadgeTimer;
   // 弹幕
   bool _danmakuEnabled = true;
+  // 位置防闪回：过滤后的位置（无明确 seek 时位置不得无故倒退）
+  Duration _acceptedPosition = Duration.zero;
+  DateTime? _lastExplicitSeekAt;
+  // 快退锚点（确定性目标计算，避免 seek 排队抖动）
+  Duration _rewindAnchor = Duration.zero;
+  DateTime? _rewindStartWall;
+  bool _rewindSeekInFlight = false;
+  Duration? _lastRewindTarget;
   double _danmakuOpacity = 0.85;
   double _danmakuFontScale = 1.0;
   double _danmakuArea = 0.6;
@@ -119,6 +127,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   @override
   void initState() {
     super.initState();
+    _acceptedPosition = widget.player.state.position;
     _initSystemControls();
     _listenPlayerStreams();
     _updateCurrentTime();
@@ -192,8 +201,21 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
       }
     }));
 
-    _subscriptions.add(widget.player.stream.position.listen((_) {
+    _subscriptions.add(widget.player.stream.position.listen((pos) {
       if (!mounted) return;
+      // 防闪回：长按快进/快退后 mpv 偶发回吐旧位置事件，进度会瞬间
+      // 跳回操作前。无明确 seek 时，位置倒退 >3s 的事件直接丢弃
+      // （新一集从 0 附近开始不在此列）。
+      final backward = _acceptedPosition - pos;
+      final seekRecent = _lastExplicitSeekAt != null &&
+          DateTime.now().difference(_lastExplicitSeekAt!) <
+              const Duration(seconds: 1);
+      if (backward > const Duration(seconds: 3) &&
+          pos > const Duration(seconds: 2) &&
+          !seekRecent) {
+        return;
+      }
+      _acceptedPosition = pos;
       if (_controlsVisible && !_isSeekingViaSwipe) {
         setState(() {});
       }
@@ -201,6 +223,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
 
     _subscriptions.add(widget.player.stream.completed.listen((_) {
       if (!mounted) return;
+      _acceptedPosition = Duration.zero;
       setState(() {});
     }));
 
@@ -533,7 +556,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
 
   bool get _isFullscreen => widget.state.isFullscreen();
   bool get _isPlaying => widget.player.state.playing;
-  Duration get _position => widget.player.state.position;
+  Duration get _position => _acceptedPosition;
   Duration get _duration => widget.player.state.duration;
 
   void _startHideTimer() {
@@ -619,6 +642,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
         ? _position.inMilliseconds - step.inMilliseconds
         : _position.inMilliseconds + step.inMilliseconds;
     final clamped = targetMs.clamp(0, duration.inMilliseconds);
+    _lastExplicitSeekAt = DateTime.now();
     widget.player.seek(Duration(milliseconds: clamped));
     setState(() {
       _seekFeedbackIsLeft = isLeft;
@@ -631,29 +655,61 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
     _onUserInteraction();
   }
 
-  /// 长按左侧：2 倍速快退（暂停并以 2 倍墙钟速度回退进度），松手恢复。
+  /// 长按左侧：2 倍速快退。目标位置由起始锚点按墙钟确定性计算，
+  /// seek 串行发出（上一个完成才发下一个），避免旧实现每 250ms
+  /// 无等待连发 seek 在 mpv 里排队、松手时位置回吐造成的闪回。
   void _onRewindStart(LongPressStartDetails details) {
     if (_isLocked || widget.live || _duration == Duration.zero) return;
     _wasPlayingBeforeRewind = _isPlaying;
     if (_isPlaying) {
       widget.player.pause();
     }
+    _rewindAnchor = _position;
+    _rewindStartWall = DateTime.now();
+    _lastRewindTarget = null;
+    _rewindSeekInFlight = false;
     setState(() => _isRewinding = true);
     _hideTimer?.cancel();
     _rewindTimer?.cancel();
-    _rewindTimer =
-        Timer.periodic(const Duration(milliseconds: 250), (_) {
-      final pos = widget.player.state.position;
-      final back = pos - const Duration(milliseconds: 500);
-      widget.player
-          .seek(back < Duration.zero ? Duration.zero : back);
-    });
+    _rewindTimer = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) => _rewindTick(),
+    );
+  }
+
+  Duration _rewindTargetNow() {
+    if (_rewindStartWall == null) return _rewindAnchor;
+    final elapsed = DateTime.now().difference(_rewindStartWall!);
+    final target = _rewindAnchor - elapsed * 2;
+    return target < Duration.zero ? Duration.zero : target;
+  }
+
+  void _rewindTick() {
+    if (!_isRewinding || _rewindSeekInFlight) return;
+    final target = _rewindTargetNow();
+    if (_lastRewindTarget != null &&
+        (target - _lastRewindTarget!).abs() <
+            const Duration(milliseconds: 350)) {
+      return;
+    }
+    _lastRewindTarget = target;
+    _rewindSeekInFlight = true;
+    widget.player
+        .seek(target)
+        .whenComplete(() => _rewindSeekInFlight = false);
   }
 
   void _onRewindEnd() {
     if (!_isRewinding) return;
     _rewindTimer?.cancel();
     _rewindTimer = null;
+    // 落点对齐理论目标，避免停在上一个节拍的位置
+    final target = _rewindTargetNow();
+    if ((target - _position).abs() > const Duration(milliseconds: 300)) {
+      _lastExplicitSeekAt = DateTime.now();
+      widget.player.seek(target);
+    }
+    _rewindStartWall = null;
     setState(() => _isRewinding = false);
     if (_wasPlayingBeforeRewind) {
       widget.player.play();
@@ -696,6 +752,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
   void _onSwipeEnd(DragEndDetails details) {
     if (_isLocked || !_isSeekingViaSwipe || widget.live) return;
     if (_dragPosition != null) {
+      _lastExplicitSeekAt = DateTime.now();
       widget.player.seek(_dragPosition!);
     }
     setState(() {
@@ -1067,6 +1124,7 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
         if (_isFullscreen) _buildCurrentTime(),
         _buildBackButton(),
         _buildCastButton(),
+        _buildLockButton(),
         _buildCenterPlayPause(),
         _buildProgressBar(),
         _buildBottomControls(),
@@ -1951,36 +2009,42 @@ class _MobilePlayerControlsState extends State<MobilePlayerControls> {
       );
     }
 
-    return Positioned(
+    return const Positioned(
       right: 16.0,
       top: 0,
       bottom: 0,
-      child: Center(
-        child: AnimatedOpacity(
-          opacity: _controlsVisible ? 1.0 : 0.0,
-          duration: const Duration(milliseconds: 200),
-          child: IgnorePointer(
-            ignoring: !_controlsVisible,
-            child: GestureDetector(
-              onTap: () {
-                setState(() {
-                  _isLocked = !_isLocked;
-                  _controlsVisible = true;
-                });
-                _startHideTimer();
-              },
-              behavior: HitTestBehavior.opaque,
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Icon(
-                  _isLocked ? Icons.lock : Icons.lock_open,
-                  color: Colors.white,
-                  size: 24,
-                ),
+      child: SizedBox.shrink(),
+    );
+  }
+
+  /// 锁定按钮：放在顶部控制栏（投屏按钮左侧），不再占用右侧中部
+  /// （与快进按钮重叠）。锁定时其他控件隐藏，但此按钮只随控制栏
+  /// 显隐，保证随时可解锁。
+  Widget _buildLockButton() {
+    if (!_isFullscreen) return const SizedBox.shrink();
+    return Positioned(
+      top: 8,
+      right: 64.0,
+      child: AnimatedOpacity(
+        opacity: _controlsVisible ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 200),
+        child: IgnorePointer(
+          ignoring: !_controlsVisible,
+          child: GestureDetector(
+            onTap: () {
+              setState(() {
+                _isLocked = !_isLocked;
+                _controlsVisible = true;
+              });
+              _startHideTimer();
+            },
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              child: Icon(
+                _isLocked ? Icons.lock : Icons.lock_open,
+                color: Colors.white,
+                size: 24,
               ),
             ),
           ),
@@ -2190,14 +2254,37 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
   bool _isSeeking = false; // 新增：标记是否正在 seek
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration>? _bufferSubscription;
+  // 防闪回过滤（与控制层同一规则）：无明确 seek 时位置不得倒退 >3s
+  Duration _acceptedPosition = Duration.zero;
+  Duration _lastDuration = Duration.zero;
+  DateTime? _lastSeekAt;
 
   @override
   void initState() {
     super.initState();
+    _acceptedPosition = widget.player.state.position;
+    _lastDuration = widget.player.state.duration;
     _positionSubscription = widget.player.stream.position.listen((_) {
-      if (mounted && !_isDragging && !_isSeeking) {
+      if (!mounted || _isDragging || _isSeeking) return;
+      final pos = widget.player.state.position;
+      final dur = widget.player.state.duration;
+      if (dur != _lastDuration) {
+        _lastDuration = dur;
+        _acceptedPosition = pos;
         setState(() {});
+        return;
       }
+      final backward = _acceptedPosition - pos;
+      final seekRecent = _lastSeekAt != null &&
+          DateTime.now().difference(_lastSeekAt!) <
+              const Duration(seconds: 1);
+      if (backward > const Duration(seconds: 3) &&
+          pos > const Duration(seconds: 2) &&
+          !seekRecent) {
+        return; // 丢弃旧位置事件（长按操作后 mpv 回吐）
+      }
+      _acceptedPosition = pos;
+      setState(() {});
     });
     _bufferSubscription = widget.player.stream.buffer.listen((_) {
       if (mounted && !_isDragging) {
@@ -2216,7 +2303,7 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
   @override
   Widget build(BuildContext context) {
     final duration = widget.player.state.duration;
-    final position = widget.dragPosition ?? widget.player.state.position;
+    final position = widget.dragPosition ?? _acceptedPosition;
 
     double value = 0.0;
     if (duration.inMilliseconds > 0) {
@@ -2261,6 +2348,7 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
                   _isSeeking = true; // 标记开始 seek
                 });
 
+                _lastSeekAt = DateTime.now();
                 await widget.player.seek(seekPosition);
 
                 // seek 完成后，延迟一小段时间再允许位置更新，确保播放器状态已同步
@@ -2287,6 +2375,7 @@ class _MobileVideoProgressBarState extends State<_MobileVideoProgressBar> {
                 _isSeeking = true; // 标记开始 seek
               });
 
+              _lastSeekAt = DateTime.now();
               await widget.player.seek(seekPosition);
 
               // seek 完成后，延迟一小段时间再允许位置更新，确保播放器状态已同步
