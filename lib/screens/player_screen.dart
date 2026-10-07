@@ -22,6 +22,7 @@ import '../widgets/player_details_panel.dart';
 import '../widgets/player_episodes_panel.dart';
 import '../widgets/player_sources_panel.dart';
 import '../widgets/windows_title_bar.dart';
+import '../widgets/playback_diagnostic.dart';
 
 class PlayerScreen extends StatefulWidget {
   final String? source;
@@ -130,6 +131,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 播放器的 GlobalKey，用于保持播放器状态
   final GlobalKey _playerKey = GlobalKey();
   int _loadGeneration = 0;
+  bool _specialModeUi = false;
 
   bool _isActiveLoad(int generation) =>
       mounted && generation == _loadGeneration;
@@ -155,6 +157,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     )..repeat();
     // 添加应用生命周期监听器
     WidgetsBinding.instance.addObserver(this);
+    // 里世界（特殊模式）下显示播放诊断入口
+    UserDataService.getSpecialMode().then((value) {
+      if (mounted && value) {
+        setState(() => _specialModeUi = true);
+      }
+    });
   }
 
   /// 设置竖屏方向
@@ -1151,6 +1159,39 @@ class _PlayerScreenState extends State<PlayerScreen>
           animationController: _switchLoadingAnimationController,
           onBackPressed: _isWebFullscreen ? _exitWebFullscreen : _onBackPressed,
         ),
+        // 播放诊断入口（仅里世界）：卡加载时点虫子图标分段实测中转链路。
+        // 放在页面级 Stack 上，加载蒙版盖不住、随时可点。
+        if (_specialModeUi && !_isCasting)
+          Positioned(
+            top: 52,
+            right: 10,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                final detail = currentDetail;
+                if (detail == null || detail.episodes.isEmpty) return;
+                final idx = currentEpisodeIndex
+                    .clamp(0, detail.episodes.length - 1);
+                showPlaybackDiagnostic(
+                  context,
+                  rawUrl: detail.episodes[idx],
+                  sourceKey: currentSource,
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.bug_report,
+                  color: Colors.white70,
+                  size: 17,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
