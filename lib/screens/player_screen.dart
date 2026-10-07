@@ -1178,6 +1178,7 @@ class _PlayerScreenState extends State<PlayerScreen>
             currentEpisodeIndex: currentEpisodeIndex,
             totalEpisodes: totalEpisodes,
             sourceName: currentDetail?.sourceName ?? currentSource,
+            posterUrl: currentDetail?.poster,
             onWebFullscreenChanged: (isWebFullscreen) {
               setState(() {
                 _isWebFullscreen = isWebFullscreen;

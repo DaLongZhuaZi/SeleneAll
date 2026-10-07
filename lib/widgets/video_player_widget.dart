@@ -5,6 +5,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:pip/pip.dart';
 import '../services/super_res_service.dart';
+import '../services/system_media_service.dart';
 import '../services/user_data_service.dart';
 import 'mobile_player_controls.dart';
 import 'pc_player_controls.dart';
@@ -26,6 +27,7 @@ class VideoPlayerWidget extends StatefulWidget {
   final int? currentEpisodeIndex;
   final int? totalEpisodes;
   final String? sourceName;
+  final String? posterUrl;
   final Function(bool isWebFullscreen)? onWebFullscreenChanged;
   final VoidCallback? onExitFullScreen;
   final bool live;
@@ -48,6 +50,7 @@ class VideoPlayerWidget extends StatefulWidget {
     this.currentEpisodeIndex,
     this.totalEpisodes,
     this.sourceName,
+    this.posterUrl,
     this.onWebFullscreenChanged,
     this.onExitFullScreen,
     this.live = false,
@@ -164,6 +167,50 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     if (widget.url != oldWidget.url && widget.url != null) {
       unawaited(_updateDataSource(widget.url!));
     }
+    // 系统媒体控件：标题/集数/封面变化时刷新会话元信息
+    if (widget.videoTitle != oldWidget.videoTitle ||
+        widget.currentEpisodeIndex != oldWidget.currentEpisodeIndex ||
+        widget.posterUrl != oldWidget.posterUrl) {
+      _notifySystemMedia();
+    }
+    final mediaHandler = SystemMediaService.handler;
+    if (mediaHandler != null) {
+      mediaHandler.onSkipToNext = widget.onNextEpisode;
+    }
+  }
+
+  /// 初始化系统媒体会话（仅 Android）：绑定播放器后，通知栏/锁屏
+  /// 即可控制播放。失败静默（不影响正常播放）。
+  void _bindSystemMedia() {
+    if (!Platform.isAndroid) return;
+    SystemMediaService.ensureInitialized().then((handler) {
+      if (handler == null || _playerDisposed || _player == null) return;
+      handler.attachPlayer(_player!);
+      handler.onSkipToNext = widget.onNextEpisode;
+      _notifySystemMedia();
+    }).catchError((_) {});
+  }
+
+  /// 把当前视频的标题/集数/封面同步到系统媒体控件。
+  void _notifySystemMedia() {
+    final handler = SystemMediaService.handler;
+    if (handler == null) return;
+    final url = _currentUrl;
+    if (url == null) return;
+    final index = widget.currentEpisodeIndex;
+    final total = widget.totalEpisodes;
+    handler.notifyMediaChanged(
+      id: url,
+      title: widget.videoTitle ?? '视频播放',
+      sourceName: widget.sourceName,
+      episodeLabel: (index != null && total != null && total > 1)
+          ? '第 ${index + 1} 集 / 共 $total 集'
+          : null,
+      artUri: (widget.posterUrl != null &&
+              widget.posterUrl!.startsWith('http'))
+          ? Uri.tryParse(widget.posterUrl!)
+          : null,
+    );
   }
 
   Future<void> _initializePlayer() async {
@@ -173,6 +220,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     _player = Player();
     _videoController = VideoController(_player!);
     _setupPlayerListeners();
+    _bindSystemMedia();
     // 应用已保存的超分（Anime4K）模式
     final superResMode = await UserDataService.getSuperResMode();
     if (superResMode != SuperResMode.off && _player != null) {
@@ -298,6 +346,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       return;
     }
     _currentUrl = url;
+    _notifySystemMedia();
     if (headers != null) {
       _currentHeaders = headers;
     }
@@ -444,6 +493,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       return;
     }
     _playerDisposed = true;
+    // 退出播放时摘除系统媒体控件
+    SystemMediaService.handler?.detachPlayer();
     _positionSubscription?.cancel();
     _playingSubscription?.cancel();
     _completedSubscription?.cancel();
