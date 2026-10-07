@@ -683,13 +683,14 @@ class _PlayerScreenState extends State<PlayerScreen>
       } else {
         // 本地播放：根据设备类型调用对应播放器的 updateDataSource
         var playUrl = finalUrl;
-        // 里世界（特殊模式）与网页版对齐走服务端中转：网页版经
-        // cms-proxy 拿到的是 proxy-m3u8 包装地址——播放列表由服务器
-        // 抓取、去广告、子列表递归代理，分片保持直连（网页版实测
-        // 流畅的正是这条路径）。注意不能加 proxySegments：分片全中转
-        // 走的是另一个接口，要求该源在服务端单独开启「代理模式」，
-        // 未开启会直接 403 卡死（已实测踩坑）。用户自设 m3u8 代理时
-        // 不叠加。
+        Map<String, String>? playHeaders;
+        // 里世界（特殊模式）走服务端全中转：列表经 proxy-m3u8 由
+        // 服务器抓取/去广告，分片经 /api/proxy/vod/segment 中转。
+        // 分片全中转的前提（缺一不可，均已齐备）：① 地址带
+        // source=<源key> 且 proxySegments=true；② 该源已在服务端
+        // 后台开启「代理模式」（用户 2026-10-07 已对里世界源开启）；
+        // ③ 分片接口不在登录豁免名单，mpv 必须带登录 Cookie
+        // （网页版靠浏览器自动带）。用户自设 m3u8 代理时不叠加。
         if (m3u8ProxyUrl.isEmpty &&
             (newUrl.startsWith('http://') ||
                 newUrl.startsWith('https://')) &&
@@ -699,14 +700,18 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (serverUrl != null && serverUrl.isNotEmpty) {
             final base = serverUrl.replaceAll(RegExp(r'/+$'), '');
             playUrl =
-                '$base/api/proxy-m3u8?url=${Uri.encodeComponent(newUrl)}&source=${Uri.encodeComponent(currentSource)}';
-            print('里世界播放走服务端列表中转: $playUrl');
+                '$base/api/proxy-m3u8?url=${Uri.encodeComponent(newUrl)}&source=${Uri.encodeComponent(currentSource)}&proxySegments=true';
+            print('里世界播放走服务端全中转: $playUrl');
+            final cookies = await UserDataService.getCookies();
+            if (cookies != null && cookies.isNotEmpty) {
+              playHeaders = {'Cookie': cookies};
+            }
           }
         }
         await _videoPlayerController?.updateDataSource(
           playUrl,
           startAt: startAt,
-          headers: const <String, String>{},
+          headers: playHeaders ?? const <String, String>{},
         );
       }
     } catch (e) {
